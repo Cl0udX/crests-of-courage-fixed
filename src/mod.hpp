@@ -24,6 +24,9 @@ bool coop_world_stalled(uint8_t playerId);
 
 bool coop_player_paused(uint8_t playerId);
 
+// True for a short while after that player closed a menu.
+bool coop_player_returning(uint8_t playerId);
+
 bool coop_player_unheard(uint8_t playerId);
 
 bool coop_on_title_screen();
@@ -241,6 +244,10 @@ struct CoopFeatureVars {
     ConfigVarHandle debugMenu = 0;
 
     ConfigVarHandle deathLink = 0;
+
+    ConfigVarHandle sharedRupees = 0;
+    ConfigVarHandle sharedHearts = 0;
+    ConfigVarHandle keepKeys = 0;
 
     ConfigVarHandle debugAutowarp = 0;
 
@@ -591,6 +598,9 @@ enum CoopSessionFlag : uint16_t {
     kSessItems = 1 << 6,
     kSessTime = 1 << 7,
     kSessDeathLink = 1 << 8,
+    kSessSharedRupees = 1 << 9,
+    kSessSharedHearts = 1 << 10,
+    kSessKeepKeys = 1 << 11,
 };
 bool coop_session(uint16_t flag, bool localValue);
 

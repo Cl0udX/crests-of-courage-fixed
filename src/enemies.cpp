@@ -175,7 +175,7 @@ const int kDiagEveryTicks = 300;
 const int kDumpMax = 60;
 const f32 kSnapDistance = 400.0f;
 
-const int kUnpauseSnapTicks = 10;
+const int kUnpauseSnapTicks = 45;
 int s_unpauseSnapTicks = 0;
 const f32 kPosLerp = 0.5f;
 const int kStaleTicks = 30;
@@ -1098,11 +1098,13 @@ bool peer_owner_is_live() {
 bool player_is_live(uint8_t playerId) {
     if (playerId >= kCoopMaxPlayers) return false;
 
-    if (playerId == coop_net_local_id()) return !coop_player_paused(playerId);
+    if (playerId == coop_net_local_id()) {
+        return !coop_player_paused(playerId) && !coop_player_returning(playerId);
+    }
     if (!coop_net_player_present(playerId)) return false;
     if (coop_net_ticks_since_player(playerId) >= kOwnerStaleTicks) return false;
 
-    return !coop_player_paused(playerId);
+    return !coop_player_paused(playerId) && !coop_player_returning(playerId);
 }
 
 uint8_t intended_owner(int8_t room, uint32_t key) {
@@ -1128,6 +1130,19 @@ const uint32_t kOwnerlessTicks = 90;
 bool is_owned_locally(int8_t room, uint32_t key) {
     const uint8_t me = coop_net_local_id();
     if (me >= kCoopMaxPlayers) return true;
+
+    // In a menu (or just out of one): our world is frozen or stale, so whoever is still playing
+    // runs our enemies and we follow them, instead of both of us running the same enemy.
+    if (!player_is_live(me)) {
+        const Tracked* held = find_tracked(room, key);
+        if (held == nullptr || !held->carriedByUs) {
+            for (int i = 0; i < kCoopMaxPlayers; ++i) {
+                if (static_cast<uint8_t>(i) != me && player_is_live(static_cast<uint8_t>(i))) {
+                    return false;
+                }
+            }
+        }
+    }
     const uint8_t owner = intended_owner(room, key);
     if (owner == me) return true;
 
@@ -2182,7 +2197,8 @@ bool player_reachable(uint8_t playerId) {
     cXyz p;
 
     return playerId < kCoopMaxPlayers && coop_net_player_present(playerId) &&
-           !coop_player_paused(playerId) && player_body(playerId, p);
+           !coop_player_paused(playerId) && !coop_player_returning(playerId) &&
+           player_body(playerId, p);
 }
 
 f32 player_distance(uint8_t playerId, const cXyz& at) {

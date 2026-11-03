@@ -15,6 +15,8 @@
 #include "d/actor/d_a_obj_smallkey.h"
 #include "d/actor/d_a_tbox.h"
 #include "d/actor/d_a_tbox2.h"
+#include "d/actor/d_a_door_shutter.h"
+#include "d/d_door_param2.h"
 #include "d/d_tresure.h"
 #include "d/d_bg_w.h"
 #include "d/d_stage.h"
@@ -86,6 +88,9 @@ enum WorldRegion : uint8_t {
     kRegionCollect = 9,
 
     kRegionStatusB = 10,
+
+    // Small keys picked up, as a count to add (used when each player keeps their own keys).
+    kRegionKeyGain = 11,
 };
 
 const int kStatusBSize = 2;
@@ -749,6 +754,38 @@ void diff_status_b(dSv_info_c* info) {
     std::memcpy(s_statusB.bytes, cur, kStatusBSize);
 }
 
+bool keep_own_keys() {
+    return coop_session(kSessKeepKeys, cfg_bool(features_vars().keepKeys, false));
+}
+
+// A locked door decides it is locked when it loads. If someone else opens it while you are
+// already in the room, the switch bit arrives but the door still shows its lock, and it wants a
+// key you may no longer have. Unlock any loaded key door whose switch is already set.
+void* unlock_opened_key_door(void* proc, void* data) {
+    auto* actor = static_cast<fopAc_ac_c*>(proc);
+    if (actor == nullptr || fopAcM_GetName(actor) != fpcNm_DOOR20_e) return nullptr;
+    auto* door = reinterpret_cast<daDoor20_c*>(actor);
+    if (!door->field_0x5f0) return nullptr;
+    if (door_param2_c::getFrontOption(actor) != 2 && door_param2_c::getBackOption(actor) != 2) {
+        return nullptr;
+    }
+    const int swBit = door_param2_c::getSwbit(actor);
+    if (swBit == 0xff || !dComIfGs_isSwitch(swBit, 0xffffffff)) return nullptr;
+    door->field_0x5f0 = false;
+    if (door->field_0x5ec != static_cast<u32>(-1) && !fpcM_IsCreating(door->field_0x5ec)) {
+        fopAcM_delete(door->field_0x5ec);
+        door->field_0x5ec = static_cast<u32>(-1);
+    }
+    ++*static_cast<int*>(data);
+    return nullptr;
+}
+
+void unlock_opened_key_doors() {
+    int count = 0;
+    fopAcM_Search(unlock_opened_key_door, &count);
+    if (count > 0) coop_log::info("coop_mod: [WORLD] {} key door(s) opened by a partner unlocked", count);
+}
+
 bool local_mid_sequence() {
     return dComIfGp_event_runCheck() != 0;
 }
@@ -803,11 +840,21 @@ void scan() {
 
     uint8_t* mem = mem_bytes(info->getMemory());
     if (dungeon) {
+        unlock_opened_key_doors();
         if (mem[kKeyOffset] != s_base.mem[kKeyOffset]) {
-            uint8_t value[1] = {mem[kKeyOffset]};
-            uint8_t zero[1] = {0};
-            send_delta(s_base, kRegionKeys, -1, 0, 1, value, zero);
-            coop_log::info("coop_mod: [WORLD] small keys now {}", mem[kKeyOffset]);
+            if (!keep_own_keys()) {
+                uint8_t value[1] = {mem[kKeyOffset]};
+                uint8_t zero[1] = {0};
+                send_delta(s_base, kRegionKeys, -1, 0, 1, value, zero);
+                coop_log::info("coop_mod: [WORLD] small keys now {}", mem[kKeyOffset]);
+            } else if (mem[kKeyOffset] > s_base.mem[kKeyOffset]) {
+                // Each player keeps their own keys: share pickups, keep spending local.
+                uint8_t value[1] = {
+                    static_cast<uint8_t>(mem[kKeyOffset] - s_base.mem[kKeyOffset])};
+                uint8_t zero[1] = {0};
+                send_delta(s_base, kRegionKeyGain, -1, 0, 1, value, zero);
+                coop_log::info("coop_mod: [WORLD] picked up {} small key(s)", value[0]);
+            }
         }
 
         keep_mem_local(stage, s_base.mem, mem);
@@ -1479,7 +1526,7 @@ void handle_full(const MsgWorldFull& msg) {
 
         merge_full(mem, baselineValid ? s_base.mem : nullptr, msg.data, kMemSize,
             dungeon_stage(stage));
-        mem[kKeyOffset] = keyPending ? localKeys : msg.data[kKeyOffset];
+        mem[kKeyOffset] = (keyPending || keep_own_keys()) ? localKeys : msg.data[kKeyOffset];
         keep_mem_local(stage, mem, memBefore);
         keep_bomb_house(saveNo, mem, memBefore);
         if (baselineValid) keep_mem_local(stage, s_base.mem, memBefore);
@@ -2783,6 +2830,17 @@ void world_on_message(uint8_t type, const uint8_t* payload, size_t size, uint8_t
                                    : mem_bytes(info->getSavedata().getSave(msg.saveNo));
         target[kKeyOffset] = msg.set[0];
         if (slotBaselineValid) s_base.mem[kKeyOffset] = msg.set[0];
+        break;
+    }
+    case kRegionKeyGain: {
+        if (msg.saveNo < 0 || msg.saveNo >= dSv_save_c::STAGE_MAX || msg.size < 1) return;
+        uint8_t* target = sameSlot ? mem_bytes(info->getMemory())
+                                   : mem_bytes(info->getSavedata().getSave(msg.saveNo));
+        const int sum = target[kKeyOffset] + msg.set[0];
+        target[kKeyOffset] = static_cast<uint8_t>(sum > 99 ? 99 : sum);
+        if (slotBaselineValid) s_base.mem[kKeyOffset] = target[kKeyOffset];
+        coop_log::info("coop_mod: [WORLD] partner picked up {} small key(s), now {}", msg.set[0],
+            target[kKeyOffset]);
         break;
     }
     case kRegionDan: {

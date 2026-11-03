@@ -3,7 +3,7 @@
 #include <cstdint>
 #include <string>
 
-const uint16_t kCoopProtocolVersion = 74;
+const uint16_t kCoopProtocolVersion = 75;
 
 #ifndef COOP_MOD_VERSION
 #define COOP_MOD_VERSION "0.0.0"
@@ -121,6 +121,9 @@ enum CoopMsgType : uint8_t {
     kMsgChat = 76,
     kMsgCatchUpWant = 77,
     kMsgCatchUp = 78,
+    kMsgRupeeDelta = 79,
+    kMsgRupeeTotal = 80,
+    kMsgSharedHeal = 81,
 };
 
 const int kBundleFlags = 16;
@@ -641,6 +644,21 @@ const uint8_t kStoryRules = 5;
 
 struct MsgDeathLink {
     char name[kCoopNameMax];
+};
+
+// Shared wallet: a change to add, and the host's total to settle any drift.
+struct MsgRupeeDelta {
+    int16_t delta;
+    uint8_t pad[2];
+};
+struct MsgRupeeTotal {
+    uint16_t total;
+    uint8_t pad[2];
+};
+
+// A recovery heart someone picked up, given to everybody.
+struct MsgSharedHeal {
+    float amount;
 };
 
 struct MsgWorldSyncRequest {

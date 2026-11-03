@@ -554,10 +554,111 @@ void apply_death_link(const MsgDeathLink& msg) {
     toast(who[0] != '\0' ? who : "Your partner", "died, so did you.");
 }
 
+// ---- Shared rupees ----------------------------------------------------------------------------
+// Everyone watches their own wallet (including rupees still counting up or down in the meter) and
+// sends what changed. The host also sends its total now and then so any drift settles.
+
+static bool s_rupeeHave = false;
+static int s_rupeeLast = 0;
+static uint32_t s_rupeeLocalAt = 0;
+static char s_rupeeStage[8] = {};
+
+static bool shared_rupees_on() {
+    return coop_net_connected() &&
+           coop_session(kSessSharedRupees, cfg_bool(s_vars.sharedRupees, false));
+}
+
+static int effective_rupees() {
+    const int max = dComIfGs_getRupeeMax();
+    int total = static_cast<int>(dComIfGs_getRupee()) + dComIfGp_getItemRupeeCount();
+    if (total < 0) total = 0;
+    if (total > max) total = max;
+    return total;
+}
+
+void update_shared_rupees() {
+    if (!shared_rupees_on() || daAlink_getAlinkActorClass() == nullptr) {
+        s_rupeeHave = false;
+        return;
+    }
+    const char* stage = dComIfGp_getStartStageName();
+    if (stage == nullptr) {
+        s_rupeeHave = false;
+        return;
+    }
+    if (std::strncmp(stage, s_rupeeStage, sizeof(s_rupeeStage)) != 0) {
+        std::strncpy(s_rupeeStage, stage, sizeof(s_rupeeStage));
+        s_rupeeHave = false;
+    }
+    const int now = effective_rupees();
+    if (!s_rupeeHave) {
+        s_rupeeHave = true;
+        s_rupeeLast = now;
+        return;
+    }
+    const int delta = now - s_rupeeLast;
+    s_rupeeLast = now;
+    if (delta != 0) {
+        MsgRupeeDelta msg{};
+        msg.delta = static_cast<int16_t>(delta);
+        coop_net_send(kMsgRupeeDelta, &msg, sizeof(msg));
+        s_rupeeLocalAt = s_invTick;
+        coop_log::info("coop_mod: [RUPEES] local change {}, sent", delta);
+    }
+    if (coop_net_is_host() && s_invTick % 120 == 0) {
+        MsgRupeeTotal total{};
+        total.total = static_cast<uint16_t>(now);
+        coop_net_send(kMsgRupeeTotal, &total, sizeof(total));
+    }
+}
+
+void apply_rupee_delta(const MsgRupeeDelta& msg) {
+    if (!shared_rupees_on()) return;
+    int delta = msg.delta;
+    const int max = dComIfGs_getRupeeMax();
+    const int have = static_cast<int>(dComIfGs_getRupee()) + dComIfGp_getItemRupeeCount();
+    if (have + delta < 0) delta = -have;
+    if (have + delta > max) delta = max - have;
+    if (delta != 0) dComIfGp_setItemRupeeCount(delta);
+    if (s_rupeeHave) s_rupeeLast = effective_rupees();
+}
+
+void apply_rupee_total(const MsgRupeeTotal& msg) {
+    if (!shared_rupees_on() || coop_net_is_host()) return;
+    if (daAlink_getAlinkActorClass() == nullptr) return;
+    // Something of ours may still be on its way to the host, or still counting in the meter.
+    if (s_invTick - s_rupeeLocalAt < 90 || dComIfGp_getItemRupeeCount() != 0) return;
+    int total = msg.total;
+    const int max = dComIfGs_getRupeeMax();
+    if (total > max) total = max;
+    if (dComIfGs_getRupee() == total) return;
+    coop_log::info("coop_mod: [RUPEES] settling to host's {} (had {})", total, dComIfGs_getRupee());
+    dComIfGs_setRupee(static_cast<u16>(total));
+    if (s_rupeeHave) s_rupeeLast = effective_rupees();
+}
+
+// ---- Shared hearts ----------------------------------------------------------------------------
+
+void apply_shared_heal(const MsgSharedHeal& msg) {
+    if (!coop_session(kSessSharedHearts, cfg_bool(s_vars.sharedHearts, false))) return;
+    if (daAlink_getAlinkActorClass() == nullptr || dComIfGs_getLife() == 0) return;
+    float amount = msg.amount;
+    if (!(amount > 0.0f) || amount > 80.0f) return;
+    dComIfGp_setItemLifeCount(amount, 0);
+}
+
 void on_item_given(ModContext*, const ItemGiveInfo* info, void*) {
     if (info == nullptr) return;
     if (info->origin == ITEM_GIVE_ORIGIN_QUEUE_SILENT && info->check_name == nullptr) {
         note_queued_item_landed();
+    }
+
+    if (info->origin == ITEM_GIVE_ORIGIN_GAME && info->item == dItemNo_HEART_e &&
+        coop_net_connected() &&
+        coop_session(kSessSharedHearts, cfg_bool(s_vars.sharedHearts, false))) {
+        MsgSharedHeal heal{};
+        heal.amount = 4.0f;
+        coop_net_send(kMsgSharedHeal, &heal, sizeof(heal));
     }
 
     const bool queuedCheck = info->origin == ITEM_GIVE_ORIGIN_QUEUE && info->check_name != nullptr;
@@ -1845,6 +1946,9 @@ void features_register_vars() {
     s_vars.debugAutowarp = register_var("debug_autowarp_ticks", CONFIG_VAR_INT, false, 0, nullptr);
 
     s_vars.deathLink = register_var("death_link", CONFIG_VAR_BOOL, false, 0, nullptr);
+    s_vars.sharedRupees = register_var("shared_rupees", CONFIG_VAR_BOOL, false, 0, nullptr);
+    s_vars.sharedHearts = register_var("shared_hearts", CONFIG_VAR_BOOL, false, 0, nullptr);
+    s_vars.keepKeys = register_var("own_small_keys", CONFIG_VAR_BOOL, false, 0, nullptr);
     s_vars.debugShiftTicks = register_var("debug_shift_ticks", CONFIG_VAR_INT, false, 0, nullptr);
     s_vars.debugShiftX = register_var("debug_shift_x", CONFIG_VAR_INT, false, 0, nullptr);
     s_vars.debugShiftZ = register_var("debug_shift_z", CONFIG_VAR_INT, false, 0, nullptr);
@@ -2084,6 +2188,7 @@ void features_update() {
     run_debug_autowarp();
     run_debug_shift();
     update_death_link();
+    update_shared_rupees();
     announce_item_taken();
     coop_stage("colors");
     colors_update();
@@ -2250,6 +2355,7 @@ void features_on_disconnected() {
 }
 
 void features_reset_sync_baselines() {
+    s_rupeeHave = false;
     s_haveStateItemBits = false;
     s_haveInv = false;
     s_haveBottles = false;
@@ -2358,6 +2464,27 @@ void features_on_message(uint8_t type, const uint8_t* payload, size_t size, uint
         MsgDeathLink msg;
         std::memcpy(&msg, payload, sizeof(msg));
         apply_death_link(msg);
+        break;
+    }
+    case kMsgRupeeDelta: {
+        if (size < sizeof(MsgRupeeDelta)) break;
+        MsgRupeeDelta msg;
+        std::memcpy(&msg, payload, sizeof(msg));
+        apply_rupee_delta(msg);
+        break;
+    }
+    case kMsgRupeeTotal: {
+        if (size < sizeof(MsgRupeeTotal)) break;
+        MsgRupeeTotal msg;
+        std::memcpy(&msg, payload, sizeof(msg));
+        apply_rupee_total(msg);
+        break;
+    }
+    case kMsgSharedHeal: {
+        if (size < sizeof(MsgSharedHeal)) break;
+        MsgSharedHeal msg;
+        std::memcpy(&msg, payload, sizeof(msg));
+        apply_shared_heal(msg);
         break;
     }
     case kMsgTime: on_time(payload, size, from); break;
@@ -2495,6 +2622,9 @@ uint16_t local_session_flags() {
     if (cfg_bool(s_vars.syncInventory, true)) f |= kSessItems;
     if (cfg_bool(s_vars.syncTime, true)) f |= kSessTime;
     if (cfg_bool(s_vars.deathLink, false)) f |= kSessDeathLink;
+    if (cfg_bool(s_vars.sharedRupees, false)) f |= kSessSharedRupees;
+    if (cfg_bool(s_vars.sharedHearts, false)) f |= kSessSharedHearts;
+    if (cfg_bool(s_vars.keepKeys, false)) f |= kSessKeepKeys;
     return f;
 }
 

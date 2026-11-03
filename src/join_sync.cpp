@@ -344,7 +344,10 @@ void load_host_save(dSv_info_c* info, const uint8_t* blob, uint8_t at = kCoopHos
         static const u16 kWalletCap[] = {300, 600, 1000};
         const u8 wallet = a.getWalletSize();
         const u16 walletCap = wallet < 3 ? kWalletCap[wallet] : 1000;
-        a.setRupee(std::min<u16>(myA.getRupee(), walletCap));
+        // With a shared wallet everybody uses the host's rupees.
+        if (!coop_session(kSessSharedRupees, cfg_bool(features_vars().sharedRupees, false))) {
+            a.setRupee(std::min<u16>(myA.getRupee(), walletCap));
+        }
     }
 
     if (result.mPlayer.mHorsePlace.mName[0] != '\0') {

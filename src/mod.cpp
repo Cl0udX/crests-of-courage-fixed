@@ -2820,6 +2820,13 @@ uint32_t coop_ticks_since_world(uint8_t playerId) {
 const uint32_t kWorldStallTicks = 20;
 
 bool g_localPausedSent = false;
+
+// After someone closes a menu, give them a moment to take on what the others did meanwhile before
+// they take their enemies back. Without this the one coming back reclaims enemies frozen at the
+// moment they paused, and everything the others did to them in the meantime snaps back.
+const uint32_t kReturnGraceTicks = 45;
+uint32_t g_playerBackTick[kCoopMaxPlayers] = {};
+uint32_t g_localBackTick = 0;
 uint32_t g_pauseResendTicks = 0;
 
 bool coop_local_paused() {
@@ -2833,6 +2840,8 @@ void coop_net_set_player_paused(uint8_t playerId, bool paused) {
         coop_log::info("coop_mod: [PAUSE] player {} {}", playerId,
             paused ? "opened a menu - handing over what they own" : "is back");
     }
+    if (g_playerPaused[playerId] && !paused) g_playerBackTick[playerId] = g_tickCounter | 1;
+    if (paused) g_playerBackTick[playerId] = 0;
     g_playerPaused[playerId] = paused;
 }
 
@@ -2859,8 +2868,15 @@ void announce_local_pause() {
         coop_log::info("coop_mod: [PAUSE] local {}", paused ? "opened a menu - handing over"
                                                           : "closed the menu");
 
+        g_localBackTick = paused ? 0 : (g_tickCounter | 1);
         if (!paused) enemies_on_local_unpause();
     }
+}
+
+bool coop_player_returning(uint8_t playerId) {
+    if (playerId >= kCoopMaxPlayers) return false;
+    const uint32_t back = playerId == g_localId ? g_localBackTick : g_playerBackTick[playerId];
+    return back != 0 && g_tickCounter - back < kReturnGraceTicks;
 }
 
 bool coop_world_stalled(uint8_t playerId) {

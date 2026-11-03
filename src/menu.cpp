@@ -927,6 +927,9 @@ ModResult group_sharing(ModContext*, UiElementHandle pane, void*, ModError*) {
         "Not rupees or ammo. Small keys are shared: one of you spends it, it is gone for all.");
     add_toggle(pane, "Dungeon progress", world_dungeon_var(),
         "Chests, switches and doors. Open one and it is open for everybody.");
+    add_toggle(pane, "Own small keys", features_vars().keepKeys,
+        "Small keys anyone picks up go to everybody, but using one only spends yours.",
+        world_dungeon_var());
     add_toggle(pane, "World objects", enemies_breakables_var(),
         "Pots, grass, blocks and the like.");
     add_toggle(pane, "Time of day", vars.syncTime,
@@ -938,6 +941,11 @@ ModResult group_together(ModContext*, UiElementHandle pane, void*, ModError*) {
     add_panel_header(pane, "Playing together");
     add_toggle(pane, "Death link", features_vars().deathLink,
         "One of you dies, everybody dies.");
+    add_toggle(pane, "Shared rupees", features_vars().sharedRupees,
+        "One wallet for everybody. Rupees anyone picks up or spends count for all. The host's "
+        "setting is the one in use.");
+    add_toggle(pane, "Shared hearts", features_vars().sharedHearts,
+        "A recovery heart anyone picks up heals everybody.");
     return MOD_OK;
 }
 
