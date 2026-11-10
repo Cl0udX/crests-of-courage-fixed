@@ -92,6 +92,26 @@ Probado `v1.10.2` en el Templo del Agua (`D_MN01` / `D_MN01A`), Fuente de Lanayr
 - **Causa (`R_SP160` sala 5):** cuando el dueño remata al Poe (`daE_HP_c::mAction = 6`, `executeDead`), si `apply_enemy_decision` escribe `mAction = 6` en el otro jugador, `executeDead()` (con `field_0x71c == 0`) ejecuta `case 0:` localmente: fuerza `procWolfAtnActorMoveInit()` y `ForcedDemo` sobre el Link del otro jugador aunque esté hablando con Jovani o lejos, bloqueando el evento, y además `is_downed_alive()` impedía marcar `t->killed = true` y enviar `send_gone`.
 - **Arreglo:** al recibir la acción de remate (`action == 6` en `fpcNm_E_HP_e`, o `11`/`12` en `fpcNm_E_PO_e`) o `r.gone`, no se ejecuta la cinemática de remate sobre el Link local: se activa directamente su switch (`hp->bitSw` / `po->BitSW`), se crea el efecto de desaparición y se elimina el Poe. Además `is_poe_soul_ripped()` marca `t->killed = true` en el dueño para enviar `kMsgEnemyGone`, y `on_switch_post()` permite enviar `kMsgEnemySwitch` aunque haya un evento local en curso.
 
+## Lobos Dorados / Piedras de Aullido y Duplicación de Poes (`v1.10.4`, 2026-11-10)
+
+### 1. Lobos Dorados, Piedras de Aullido y Marcadores del Mapa (`src/skills.cpp`, `src/net/messages.hpp`, `src/world.cpp`)
+- **Causa:** `src/skills.cpp` interceptaba `dComIfGs_isEventBit` (`on_is_event_bit_post`) para mentir (`FALSE`) a `daWindStone_c`, `daNpc_GWolf_c` y `daNpc_Kn_c` sobre cualquier piedra o técnica que el jugador local no hubiera completado personalmente, y marcaba `kWolfGoneFirst` (`0x1EC..0x1F1`, flags de lobos dorados retirados) como privadas en `skills_event_private()`. Como las técnicas (`0x152..0x158`) son secuenciales y sí se compartían, un lobo dorado que ya había sido usado por el compañero seguía apareciendo en el mapa y en el mundo del otro jugador, permitía volver a aullar a la piedra y terminaba enseñando la siguiente técnica en secuencia. Además, en `merge_full` (`src/world.cpp:1619`), cuando `adopt == false`, se hacía `base[i] = data[i]` tras `target[i] |= data[i]`, provocando que los switches apagados en el host pero encendidos localmente (como el marcador del mapa del lobo dorado) se reenviaran como delta `set`.
+- **Arreglo:**
+  - Se elimina el engaño de `on_is_event_bit_post` y se comparten las 6 flags `kWolfGoneFirst` (`0x1EC..0x1F1`) tanto en `world.cpp` (`skills_event_private` devuelve `0`) como en `MsgSkills::wolfGone`.
+  - `sync_wolf_world_state()` sincroniza las 6 parejas `(saveTbl, swBit)` de los marcadores de lobo dorado en el mapa (`{0x00,0x41}`, `{0x06,0x29}`, `{0x06,0x2A}`, `{0x0A,0x32}`, `{0x03,0x79}`, `{0x09,0x32}`): los enciende cuando la piedra fue aullada (`0x1D8+i`) y los apaga cuando el lobo dorado ya enseñó su técnica (`0x1EC+i`).
+  - Barrido en vivo cada 15 ticks de `daWindStone_c` y `daNpc_GWolf_c`: desactiva piedras ya aulladas sin disparar el popup de mapa (`getSwBit2`), elimina en el acto lobos dorados ya retirados (`mType == 0 && isDelete()`) o lobos de piedra ya aullada (`mType == 1`), y muestra (`mHide = false`) lobos dorados recién invocados por el compañero.
+  - En `merge_full` (`src/world.cpp:1619`), `base[i] = adopt ? data[i] : target[i]`.
+
+### 2. Poes duplicados cuando ambos tienen el mismo Poe cargado (`src/enemies.cpp`, `src/checks.cpp`, `src/features.cpp`, `src/mod.hpp`)
+- **Causa:**
+  1. `daE_HP_c` (`fpcNm_E_HP_e`) nace con `group = 0` (`fopAc_ACTOR_e`) de día y solo pasa a `fopAc_ENEMY_e` (`2`) de noche; `on_proc_execute_pre` en `src/enemies.cpp` registraba `s_seenProc` en el primer frame ignorándolo por no ser `fopAc_ENEMY_e`, de modo que al hacerse de noche se clasificaba como spawn dinámico (`[ENEMY-DYN]`) con claves distintas en cada jugador.
+  2. `daE_HP_c::executeDead()` entrega el alma mediante `item_check_enqueue` (`ITEM_GIVE_ORIGIN_QUEUE`), pero `on_give` en `src/checks.cpp` ignoraba todo lo que no fuera `ITEM_GIVE_ORIGIN_GAME` y solo revocaba duplicados si el randomizer estaba activo (`resolved`).
+  3. `watch_own_poe_souls` sobreescribía `s_nearSw = 0xFF` durante los ~4 segundos que tarda la animación `DEFAULT_GETITEM` tras borrarse el actor del Poe, antes de que subiera `dComIfGs_getPohSpiritNum()`.
+- **Arreglo:**
+  - `src/enemies.cpp`: `fpcNm_E_HP_e` y `fpcNm_E_PO_e` siempre se registran en `on_proc_execute_pre` y siempre usan `compute_placement_key` (`alwaysPlaced = true`).
+  - `src/checks.cpp` y `src/features.cpp`: `on_give` acepta `ITEM_GIVE_ORIGIN_QUEUE`, activa la revocación de duplicados para checks `poe:*` aunque no haya randomizer y expone `checks_grant_is_duplicate()` para que `features.cpp` no reenvíe `MsgItem{0xe0}` duplicado; `find_taken_poe` detecta tanto `s_fromPeers` como `fopAcM_isSwitch(actor, sw)` (respetando la animación de muerte propia) y `watch_own_poe_souls` conserva `s_nearSw` durante 300 ticks con radio de 600 unidades.
+- **Limpieza de log (`src/puppet.cpp`):** se deduplica el mensaje `[DIAG] failed to load/init anim resIdx=`.
+
 ## Pendiente
 
 1. **Probar en el juego (`v1.10.2`)** (con backup de saves):

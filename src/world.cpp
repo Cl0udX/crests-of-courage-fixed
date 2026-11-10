@@ -1616,7 +1616,7 @@ void merge_full(uint8_t* target, uint8_t* base, const uint8_t* data, int size, b
             target[i] = adopt ? data[i] : static_cast<uint8_t>(target[i] | data[i]);
         }
 
-        if (base != nullptr) base[i] = data[i];
+        if (base != nullptr) base[i] = adopt ? data[i] : target[i];
     }
 }
 

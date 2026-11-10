@@ -607,7 +607,9 @@ uint32_t placement_key(fopAc_ac_c* actor) {
     }
 
     const BirthRecord* bornAs = find_birth(id);
-    const bool runtime = bornAs != nullptr ? !bornAs->inSettle : s_settleTicks <= 0;
+    const s16 procName = fopAcM_GetName(actor);
+    const bool alwaysPlaced = procName == fpcNm_E_HP_e || procName == fpcNm_E_PO_e;
+    const bool runtime = !alwaysPlaced && (bornAs != nullptr ? !bornAs->inSettle : s_settleTicks <= 0);
     const uint32_t key = runtime ? compute_sequence_key(actor) : compute_placement_key(actor);
 
     s_keyCache[slot].id = id;
@@ -2695,7 +2697,10 @@ HookAction on_proc_execute_pre(ModContext*, void* args, void*, void*) {
         if (proc != nullptr && s_seenProc[static_cast<uint32_t>(proc->id) % kSeenSlots] != proc->id) {
             s_seenProc[static_cast<uint32_t>(proc->id) % kSeenSlots] = proc->id;
             fopAc_ac_c* actor = fopAcM_SearchByID(proc->id);
-            if (actor != nullptr && fopAcM_GetGroup(actor) == fopAc_ENEMY_e) {
+            if (actor != nullptr &&
+                (fopAcM_GetGroup(actor) == fopAc_ENEMY_e ||
+                    fopAcM_GetName(actor) == fpcNm_E_HP_e ||
+                    fopAcM_GetName(actor) == fpcNm_E_PO_e)) {
                 const int r = fopAcM_GetRoomNo(actor);
                 if (r >= 0 && r < kRooms && !s_settledRoom[r] && room_objects_loaded(r)) {
                     s_roomLoaded[r] = true;
@@ -2714,7 +2719,10 @@ HookAction on_proc_execute_pre(ModContext*, void* args, void*, void*) {
 
         if (proc != nullptr && !is_key_cached(proc->id)) {
             fopAc_ac_c* actor = fopAcM_SearchByID(proc->id);
-            if (actor != nullptr && fopAcM_GetGroup(actor) == fopAc_ENEMY_e) {
+            if (actor != nullptr &&
+                (fopAcM_GetGroup(actor) == fopAc_ENEMY_e ||
+                    fopAcM_GetName(actor) == fpcNm_E_HP_e ||
+                    fopAcM_GetName(actor) == fpcNm_E_PO_e)) {
                 placement_key(actor);
             }
         }

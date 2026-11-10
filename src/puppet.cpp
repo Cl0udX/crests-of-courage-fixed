@@ -1813,7 +1813,11 @@ mDoExt_bckAnm* get_or_load_puppet_anim(daAlink_c* alink, u16 resIdx) {
             JKR_DELETE(bck);
         }
         JKRFreeToSysHeap(buf);
-        coop_log::info("coop_mod: [DIAG] failed to load/init anim resIdx={}", resIdx);
+        static uint16_t s_lastFailedResIdx = 0xFFFF;
+        if (s_lastFailedResIdx != resIdx) {
+            s_lastFailedResIdx = resIdx;
+            coop_log::info("coop_mod: [DIAG] failed to load/init anim resIdx={}", resIdx);
+        }
         return nullptr;
     }
 

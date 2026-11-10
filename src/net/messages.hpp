@@ -280,6 +280,7 @@ struct MsgAnimal {
 
 struct MsgSkills {
     uint16_t have;
+    uint8_t wolfGone;
 };
 
 const uint32_t kRandoChunkBytes = 6000;

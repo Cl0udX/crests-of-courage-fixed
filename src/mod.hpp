@@ -983,3 +983,4 @@ void puppet_hook_set_player_visible(uint8_t playerId, bool visible);
 void puppet_hook_set_vfx_enabled(bool enabled);
 void puppet_hook_request_release();
 bool puppet_hook_is_wolf();
+bool checks_grant_is_duplicate();

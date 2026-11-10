@@ -9,6 +9,7 @@
 #include "mods/svc/save.h"
 
 #include "d/actor/d_a_alink.h"
+#include "d/actor/d_a_e_hp.h"
 #include "d/actor/d_a_e_po.h"
 #include "d/actor/d_a_obj_life_container.h"
 #include "d/actor/d_a_obj_smallkey.h"
@@ -224,7 +225,7 @@ std::unordered_set<std::string> s_ownFreestanding;
 
 void on_give(ModContext*, const ItemGiveInfo* info, void*) {
     if (info == nullptr || info->check_name == nullptr || info->check_name[0] == '\0') return;
-    if (info->origin != ITEM_GIVE_ORIGIN_GAME) return;
+    if (info->origin != ITEM_GIVE_ORIGIN_GAME && info->origin != ITEM_GIVE_ORIGIN_QUEUE) return;
     const std::string name(info->check_name);
 
     if (s_inGrant) {
@@ -235,8 +236,9 @@ void on_give(ModContext*, const ItemGiveInfo* info, void*) {
                               svc_item->resolve_check_full(mod_ctx, name.c_str(), info->item, &r) ==
                                   MOD_OK &&
                               r.was_resolved;
-        s_grantIsDuplicate = resolved && s_ledger.count(name) != 0;
-        s_grantMaybeBottle = !resolved && s_ledger.count(name) != 0 && features_bottles_relay();
+        const bool isPoe = name.rfind("poe:", 0) == 0;
+        s_grantIsDuplicate = (resolved || isPoe) && s_ledger.count(name) != 0;
+        s_grantMaybeBottle = !resolved && !isPoe && s_ledger.count(name) != 0 && features_bottles_relay();
 
         if (!s_haveAfter) {
             take_photo(s_after);
@@ -320,11 +322,23 @@ int poe_switch(fopAc_ac_c* actor) {
 void* find_taken_poe(void* proc, void* data) {
     auto* actor = static_cast<fopAc_ac_c*>(proc);
     if (actor == nullptr) return nullptr;
+    const s16 procName = fopAcM_GetName(actor);
+    if (procName == fpcNm_E_HP_e) {
+        if (static_cast<daE_HP_c*>(actor)->mAction == 6) return nullptr;
+    } else if (procName == fpcNm_E_PO_e) {
+        auto* po = reinterpret_cast<e_po_class*>(actor);
+        if (po->mArg0 >= 4 || po->mActionID == ACT_DEAD || po->mActionID == ACT_WOLF_BITE ||
+            po->mActionID == ACT_HOLL_DEMO) {
+            return nullptr;
+        }
+    } else {
+        return nullptr;
+    }
     const int sw = poe_switch(actor);
     const char* stage = dComIfGp_getStartStageName();
     if (sw == 0xFF || stage == nullptr) return nullptr;
     const std::string name = "poe:" + std::string(stage) + ":" + std::to_string(sw);
-    if (s_fromPeers.count(name) == 0) return nullptr;
+    if (s_fromPeers.count(name) == 0 && !fopAcM_isSwitch(actor, sw)) return nullptr;
     auto* sweep = static_cast<Sweep*>(data);
     if (sweep->count < static_cast<int>(sizeof(sweep->found) / sizeof(sweep->found[0]))) {
         sweep->found[sweep->count++] = actor;
@@ -333,7 +347,7 @@ void* find_taken_poe(void* proc, void* data) {
 }
 
 void sweep_taken_poes() {
-    if (daAlink_getAlinkActorClass() == nullptr || dComIfGp_event_runCheck()) return;
+    if (daAlink_getAlinkActorClass() == nullptr) return;
     Sweep sweep{};
     fopAcM_Search(find_taken_poe, &sweep);
     for (int i = 0; i < sweep.count; ++i) {
@@ -382,7 +396,7 @@ void checks_init() {
 struct NearPoe {
     cXyz at;
     int sw = 0xFF;
-    f32 dist = 300.0f;
+    f32 dist = 600.0f;
 };
 
 void* find_near_poe(void* proc, void* data) {
@@ -402,11 +416,13 @@ void* find_near_poe(void* proc, void* data) {
 void watch_own_poe_souls() {
     static int s_souls = -1;
     static int s_nearSw = 0xFF;
+    static uint32_t s_nearSwTick = 0;
     daAlink_c* alink = daAlink_getAlinkActorClass();
     const char* stage = dComIfGp_getStartStageName();
 
     if (alink == nullptr || stage == nullptr || rando_active()) {
         s_souls = -1;
+        s_nearSw = 0xFF;
         return;
     }
     const int souls = dComIfGs_getPohSpiritNum();
@@ -417,13 +433,19 @@ void watch_own_poe_souls() {
             if (coop_net_connected()) send_one(name, 0);
             coop_log::info("coop_mod: [CHECKS] collected '{}' (soul)", name);
         }
+        s_nearSw = 0xFF;
     }
     s_souls = souls;
 
     NearPoe near;
     near.at = alink->current.pos;
     fopAcM_Search(find_near_poe, &near);
-    s_nearSw = near.sw;
+    if (near.sw != 0xFF) {
+        s_nearSw = near.sw;
+        s_nearSwTick = s_tick;
+    } else if (s_nearSw != 0xFF && s_tick - s_nearSwTick > 300) {
+        s_nearSw = 0xFF;
+    }
 }
 
 void checks_update() {
@@ -497,6 +519,10 @@ void checks_on_join_synced() {
 
 bool checks_collected(const char* name) {
     return name != nullptr && s_ledger.find(name) != s_ledger.end();
+}
+
+bool checks_grant_is_duplicate() {
+    return s_inGrant && s_grantIsDuplicate;
 }
 
 std::vector<std::string> checks_debug_find(const char* prefix) {

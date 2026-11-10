@@ -663,6 +663,7 @@ void on_item_given(ModContext*, const ItemGiveInfo* info, void*) {
 
     const bool queuedCheck = info->origin == ITEM_GIVE_ORIGIN_QUEUE && info->check_name != nullptr;
     if (info->origin != ITEM_GIVE_ORIGIN_GAME && !queuedCheck) return;
+    if (checks_grant_is_duplicate()) return;
     if (!coop_net_connected() || !coop_session(kSessItems, cfg_bool(s_vars.syncInventory, true))) return;
 
     if (info->item == dItemNo_UTAWA_HEART_e) s_heartGraceUntil = s_invTick + 120;

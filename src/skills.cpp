@@ -8,25 +8,20 @@
 #include "mods/svc/save.h"
 
 #include "d/actor/d_a_alink.h"
+#include "d/actor/d_a_npc_gwolf.h"
+#include "d/actor/d_a_obj_wind_stone.h"
 #include "d/d_com_inf_game.h"
 #include "d/d_save.h"
+#include "d/d_stage.h"
+#include "f_op/f_op_actor_iter.h"
 #include "f_op/f_op_actor_mng.h"
 
 #include <cstring>
 
 extern const SaveService* svc_save;
 
-DEFINE_HOOK_SYMBOL("dComIfGs_isEventBit", BOOL(u16), SkillsIsEventBitHook);
 DEFINE_HOOK_SYMBOL("dComIfGs_onEventBit", void(u16), SkillsOnEventBitHook);
 DEFINE_HOOK_SYMBOL("dSv_event_c::onEventBit", void(dSv_event_c*, u16), SkillsSvOnEventBitHook);
-DEFINE_HOOK_SYMBOL("src/d/actor/d_a_obj_wind_stone.cpp#daWindStone_create", int(void*),
-    SkillsStoneCreateHook);
-DEFINE_HOOK_SYMBOL("src/d/actor/d_a_obj_wind_stone.cpp#daWindStone_execute", int(void*),
-    SkillsStoneExecuteHook);
-DEFINE_HOOK_SYMBOL("src/d/actor/d_a_npc_gwolf.cpp#daNpc_GWolf_Create", int(void*),
-    SkillsWolfCreateHook);
-DEFINE_HOOK_SYMBOL("src/d/actor/d_a_npc_kn.cpp#daNpc_Kn_Create", int(void*),
-    SkillsShadeCreateHook);
 
 namespace {
 
@@ -35,8 +30,6 @@ const int kSkillCount = 7;
 const int kHowlFirst = 0x1D8;
 const int kHowlCount = 6;
 const int kTracked = kSkillCount + kHowlCount;
-const uint16_t kAllSkills = (1u << kSkillCount) - 1;
-const uint16_t kAllHowls = ((1u << kHowlCount) - 1) << kSkillCount;
 
 const int kWolfTmpFirst = 0x5B;
 const int kWolfTmpCount = 7;
@@ -44,16 +37,14 @@ const int kWolfTmpCount = 7;
 const int kWolfGoneFirst = 0x1EC;
 const int kWolfGoneCount = 6;
 
-enum Context { kCtxNone, kCtxStone, kCtxWolf, kCtxShade };
-Context s_context = kCtxNone;
-int s_contextDepth = 0;
-
-int s_shadeDelFlag = -1;
+const uint8_t kWolfSaveTbl[kWolfGoneCount] = {0x00, 0x06, 0x06, 0x0A, 0x03, 0x09};
+const uint8_t kWolfSwBit[kWolfGoneCount] = {0x41, 0x29, 0x2A, 0x32, 0x79, 0x32};
 
 uint16_t s_earned = 0;
 bool s_haveEarned = false;
 bool s_applying = false;
 uint16_t s_sent = 0;
+uint8_t s_sentGone = 0;
 uint32_t s_tick = 0;
 const uint32_t kResendTicks = 300;
 
@@ -67,6 +58,14 @@ const uint32_t kBlobVersion = 1;
 uint16_t label(int k) {
     const int idx = k < kSkillCount ? kSkillFirst + k : kHowlFirst + (k - kSkillCount);
     return static_cast<uint16_t>(dSv_event_flag_c::saveBitLabels[idx]);
+}
+
+uint16_t howl_label(int i) {
+    return static_cast<uint16_t>(dSv_event_flag_c::saveBitLabels[kHowlFirst + i]);
+}
+
+uint16_t gone_label(int i) {
+    return static_cast<uint16_t>(dSv_event_flag_c::saveBitLabels[kWolfGoneFirst + i]);
 }
 
 int tracked_index(uint16_t flag) {
@@ -92,6 +91,16 @@ uint16_t have_mask() {
     return mask;
 }
 
+uint8_t wolf_gone_mask() {
+    uint8_t mask = 0;
+    for (int i = 0; i < kWolfGoneCount; ++i) {
+        if (g_dComIfG_gameInfo.info.getSavedata().getEvent().isEventBit(gone_label(i)) != 0) {
+            mask |= static_cast<uint8_t>(1u << i);
+        }
+    }
+    return mask;
+}
+
 void save_earned() {
     if (svc_save == nullptr) return;
     SkillsBlob blob{kBlobVersion, s_earned, 0};
@@ -106,12 +115,13 @@ void load_earned() {
         size == sizeof(blob) && blob.version == kBlobVersion) {
         s_earned = blob.earned;
     } else {
-
         s_earned = have_mask();
         save_earned();
     }
     s_sent = 0;
-    coop_log::info("coop_mod: [SKILLS] earned {:#06x}, have {:#06x}", s_earned, have_mask());
+    s_sentGone = 0;
+    coop_log::info("coop_mod: [SKILLS] earned {:#06x}, have {:#06x}, wolfGone {:#04x}", s_earned,
+        have_mask(), wolf_gone_mask());
 }
 
 void on_save_loaded(ModContext*, uint32_t, void*) { load_earned(); }
@@ -120,11 +130,19 @@ void on_new_save(ModContext*, uint32_t, void*) {
     s_haveEarned = true;
     s_earned = 0;
     s_sent = 0;
+    s_sentGone = 0;
     save_earned();
 }
 
 void mark_earned(u16 flag) {
     if (s_applying) return;
+    for (int i = 0; i < kWolfGoneCount; ++i) {
+        if (gone_label(i) == flag) {
+            s_sent = 0;
+            s_sentGone = 0;
+            return;
+        }
+    }
     const int k = tracked_index(flag);
     if (k < 0) return;
     const uint16_t bit = static_cast<uint16_t>(1u << k);
@@ -134,6 +152,7 @@ void mark_earned(u16 flag) {
     coop_log::info("coop_mod: [SKILLS] earned {} {} here", k < kSkillCount ? "skill" : "howl",
         k < kSkillCount ? k + 1 : k - kSkillCount + 2);
     s_sent = 0;
+    s_sentGone = 0;
 }
 
 HookAction on_event_bit_pre(ModContext*, void* args, void*, void*) {
@@ -142,7 +161,6 @@ HookAction on_event_bit_pre(ModContext*, void* args, void*, void*) {
 }
 
 HookAction on_sv_event_bit_pre(ModContext*, void* args, void*, void*) {
-
     if (mods::arg<dSv_event_c*>(args, 0) != &g_dComIfG_gameInfo.info.getSavedata().getEvent()) {
         return HOOK_CONTINUE;
     }
@@ -150,76 +168,126 @@ HookAction on_sv_event_bit_pre(ModContext*, void* args, void*, void*) {
     return HOOK_CONTINUE;
 }
 
-void on_is_event_bit_post(ModContext*, void* args, void* retval, void*) {
-    if (s_context == kCtxNone || retval == nullptr) return;
-    BOOL* result = static_cast<BOOL*>(retval);
-    if (!*result) return;
-    const int k = tracked_index(mods::arg<u16>(args, 0));
-    if (k < 0) return;
-    const uint16_t bit = static_cast<uint16_t>(1u << k);
-    const uint16_t about = s_context == kCtxStone ? kAllHowls : kAllSkills;
-    if (!(about & bit) || (s_earned & bit)) return;
+struct GWolfAccess : daNpc_GWolf_c {
+    using daNpcF_c::mHide;
+};
 
-    if (about == kAllSkills && rando_active()) return;
-
-    *result = FALSE;
-}
-
-template <Context C>
-HookAction enter(ModContext*, void* args, void*, void*) {
-    if (s_contextDepth++ == 0) {
-        s_context = C;
-        s_shadeDelFlag = -1;
-        if (C == kCtxShade) {
-
-            static const s16 kDelFlag[7] = {0x153, 0x152, 0x154, 0x155, 0x156, 0x157, 0x158};
-            auto* actor = mods::arg<fopAc_ac_c*>(args, 0);
-            const u32 prm = actor != nullptr ? (fopAcM_GetParam(actor) & 0xFF) : 0;
-            if (prm >= 1 && prm <= 7) {
-                s_shadeDelFlag = static_cast<uint16_t>(dSv_event_flag_c::saveBitLabels[kDelFlag[prm - 1]]);
+void* sync_skill_actor_cb(void* proc, void*) {
+    auto* actor = static_cast<fopAc_ac_c*>(proc);
+    if (actor == nullptr) return nullptr;
+    const s16 name = fopAcM_GetName(actor);
+    if (name == fpcNm_Obj_WindStone_e) {
+        auto* stone = static_cast<daWindStone_c*>(actor);
+        if (!stone->chkEveOccur()) {
+            const u8 sw2 = stone->getSwBit2();
+            if (sw2 != 0xFF && !fopAcM_isSwitch(stone, sw2)) {
+                fopAcM_onSwitch(stone, sw2);
+            }
+            const u8 sw1 = stone->getSwBit1();
+            if (sw1 != 0xFF && fopAcM_isSwitch(stone, sw1)) {
+                fopAcM_offSwitch(stone, sw1);
+            }
+        }
+    } else if (name == fpcNm_NPC_GWOLF_e) {
+        auto* wolf = static_cast<GWolfAccess*>(actor);
+        if (wolf->mType == 0 && wolf->mParamMode >= 0 && wolf->mParamMode < 7) {
+            if (wolf->isDelete()) {
+                fopAcM_delete(wolf);
+                coop_log::info("coop_mod: [SKILLS] removed retired golden wolf mode={}",
+                    static_cast<int>(wolf->mParamMode));
+            } else if (wolf->mParamMode >= 1 &&
+                       dComIfGs_isEventBit(howl_label(wolf->mParamMode - 1)) && wolf->mHide) {
+                wolf->mHide = false;
+                coop_log::info("coop_mod: [SKILLS] unhid golden wolf mode={}",
+                    static_cast<int>(wolf->mParamMode));
+            }
+        } else if (wolf->mType == 1 && wolf->mParamMode >= 1 && wolf->mParamMode <= 6) {
+            if (dComIfGs_isEventBit(howl_label(wolf->mParamMode - 1))) {
+                fopAcM_delete(wolf);
+                coop_log::info("coop_mod: [SKILLS] removed howling stone wolf mode={}",
+                    static_cast<int>(wolf->mParamMode));
             }
         }
     }
-    return HOOK_CONTINUE;
+    return nullptr;
 }
 
-void leave(ModContext*, void*, void*, void*) {
-    if (s_contextDepth > 0 && --s_contextDepth == 0) s_context = kCtxNone;
+void sync_wolf_world_state(bool sweepActors) {
+    if (!in_game()) return;
+    stage_stag_info_class* stag = dComIfGp_getStageStagInfo();
+    const int curSaveTbl = stag != nullptr ? dStage_stagInfo_GetSaveTbl(stag) : -1;
+
+    for (int i = 0; i < kWolfGoneCount; ++i) {
+        const bool gone = dComIfGs_isEventBit(gone_label(i)) != 0;
+        bool howled = dComIfGs_isEventBit(howl_label(i)) != 0;
+        if (gone && !howled) {
+            s_applying = true;
+            dComIfGs_onEventBit(howl_label(i));
+            s_applying = false;
+            howled = true;
+        }
+        const int tbl = kWolfSaveTbl[i];
+        const int sw = kWolfSwBit[i];
+        if (gone) {
+            if (dComIfGs_isSaveSwitch(tbl, sw)) {
+                dComIfGs_offSaveSwitch(tbl, sw);
+                coop_log::info("coop_mod: [SKILLS] cleared wolf {} map switch (tbl={} sw={:#x})",
+                    i + 2, tbl, sw);
+            }
+            if (curSaveTbl == tbl && dComIfGs_isSwitch(sw, -1)) {
+                dComIfGs_offSwitch(sw, -1);
+            }
+        } else if (howled) {
+            if (!dComIfGs_isSaveSwitch(tbl, sw)) {
+                dComIfGs_onSaveSwitch(tbl, sw);
+                coop_log::info("coop_mod: [SKILLS] set wolf {} map switch (tbl={} sw={:#x})",
+                    i + 2, tbl, sw);
+            }
+            if (curSaveTbl == tbl && !dComIfGs_isSwitch(sw, -1)) {
+                dComIfGs_onSwitch(sw, -1);
+            }
+        }
+    }
+
+    if (sweepActors && !dComIfGp_event_runCheck()) {
+        fopAcM_Search(sync_skill_actor_cb, nullptr);
+    }
 }
 
-void apply(uint16_t mask) {
+void apply(uint16_t mask, uint8_t wolfGone) {
     if (!in_game() || !s_haveEarned) return;
+    bool changed = false;
     for (int k = 0; k < kTracked; ++k) {
         if (!(mask & (1u << k)) || flag_on(k)) continue;
         s_applying = true;
         dComIfGs_onEventBit(label(k));
         s_applying = false;
+        changed = true;
         coop_log::info("coop_mod: [SKILLS] peer finished {} {}, granted",
             k < kSkillCount ? "skill" : "howl", k < kSkillCount ? k + 1 : k - kSkillCount + 2);
+    }
+    for (int i = 0; i < kWolfGoneCount; ++i) {
+        if (!(wolfGone & (1u << i)) || dComIfGs_isEventBit(gone_label(i)) != 0) continue;
+        s_applying = true;
+        dComIfGs_onEventBit(gone_label(i));
+        s_applying = false;
+        changed = true;
+        coop_log::info("coop_mod: [SKILLS] peer retired golden wolf {}", i + 2);
+    }
+    if (changed) {
+        sync_wolf_world_state(true);
     }
 }
 
 }
 
 void skills_init() {
-    bool ok = mods::hook::add_post<SkillsIsEventBitHook>(on_is_event_bit_post) == MOD_OK;
-    ok = mods::hook::add_pre<SkillsOnEventBitHook>(on_event_bit_pre) == MOD_OK && ok;
-
+    bool ok = mods::hook::add_pre<SkillsOnEventBitHook>(on_event_bit_pre) == MOD_OK;
     mods::hook::add_pre<SkillsSvOnEventBitHook>(on_sv_event_bit_pre);
-    ok = mods::hook::add_pre<SkillsStoneCreateHook>(enter<kCtxStone>) == MOD_OK && ok;
-    mods::hook::add_post<SkillsStoneCreateHook>(leave);
-    ok = mods::hook::add_pre<SkillsStoneExecuteHook>(enter<kCtxStone>) == MOD_OK && ok;
-    mods::hook::add_post<SkillsStoneExecuteHook>(leave);
-    ok = mods::hook::add_pre<SkillsWolfCreateHook>(enter<kCtxWolf>) == MOD_OK && ok;
-    mods::hook::add_post<SkillsWolfCreateHook>(leave);
-    ok = mods::hook::add_pre<SkillsShadeCreateHook>(enter<kCtxShade>) == MOD_OK && ok;
-    mods::hook::add_post<SkillsShadeCreateHook>(leave);
     if (svc_save != nullptr) {
         svc_save->observe_saves(mod_ctx, on_new_save, on_save_loaded, nullptr, nullptr, nullptr);
     }
-    coop_log::info("coop_mod: [SKILLS] hooks {}", ok ? "attached" : "PARTLY FAILED - stones and "
-                                                      "shades may retire when another player "
-                                                      "finishes them");
+    coop_log::info("coop_mod: [SKILLS] hooks {}", ok ? "attached" : "PARTLY FAILED");
 }
 
 void skills_update() {
@@ -227,21 +295,27 @@ void skills_update() {
     if (!in_game()) return;
 
     if (!s_haveEarned) load_earned();
+    if (s_tick % 15 == 0) {
+        sync_wolf_world_state(true);
+    }
     if (!coop_net_connected() || !joinsync_ready_to_share()) return;
     const uint16_t have = have_mask();
-    if (have == 0) return;
-    if (have == s_sent && s_tick % kResendTicks != 0) return;
+    const uint8_t gone = wolf_gone_mask();
+    if (have == 0 && gone == 0) return;
+    if (have == s_sent && gone == s_sentGone && s_tick % kResendTicks != 0) return;
     MsgSkills msg{};
     msg.have = have;
+    msg.wolfGone = gone;
     coop_net_send(kMsgSkills, &msg, sizeof(msg));
     s_sent = have;
+    s_sentGone = gone;
 }
 
 void skills_on_message(const uint8_t* payload, size_t size) {
-    if (size < sizeof(MsgSkills)) return;
-    MsgSkills msg;
-    std::memcpy(&msg, payload, sizeof(msg));
-    apply(msg.have);
+    if (size < sizeof(uint16_t)) return;
+    MsgSkills msg{};
+    std::memcpy(&msg, payload, size < sizeof(msg) ? size : sizeof(msg));
+    apply(msg.have, size >= sizeof(MsgSkills) ? msg.wolfGone : 0);
 }
 
 uint8_t skills_tmp_private(int byte) {
@@ -253,12 +327,6 @@ uint8_t skills_tmp_private(int byte) {
     return mask;
 }
 
-uint8_t skills_event_private(int byte) {
-    uint8_t mask = 0;
-    for (int i = 0; i < kWolfGoneCount; ++i) {
-        const uint16_t flag =
-            static_cast<uint16_t>(dSv_event_flag_c::saveBitLabels[kWolfGoneFirst + i]);
-        if ((flag >> 8) == byte) mask |= static_cast<uint8_t>(flag & 0xFF);
-    }
-    return mask;
+uint8_t skills_event_private(int) {
+    return 0;
 }
