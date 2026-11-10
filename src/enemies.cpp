@@ -288,6 +288,10 @@ int s_diagOwned = 0;
 
 int s_diagConflicts = 0;
 
+// How often an enemy's target player changed (decided on the host, received on the joiner). Every
+// change hands the enemy to the other game, so it shows how much ownership churns.
+int s_diagRetargets = 0;
+
 int s_diagLonely = 0;
 
 int s_diagInstructed = 0;
@@ -1867,6 +1871,8 @@ void send_state(EnemyList& list) {
         fopAc_ac_c* actor = list.actors[i];
         if (!syncable(actor)) continue;
         if (!is_owned_locally(list.rooms[i], list.keys[i])) continue;
+        // Still up in the sky waiting for our portal cutscene: there is nothing to show yet.
+        if (twilight_beast_waiting_drop(actor)) continue;
 
         if (Tracked* ot = find_tracked(list.rooms[i], list.keys[i])) ot->decisionKnown = false;
         MsgEnemyEntry entry{};
@@ -2062,6 +2068,16 @@ void apply_remote(EnemyList& list) {
 
             if (ot != nullptr) ot->decisionKnown = false;
             continue;
+        }
+
+        // A Shadow Beast we still keep in the sky for our own portal cutscene. Writing the partner's
+        // fight onto it made that cutscene count it again on every write (see twilight.cpp), so it
+        // only follows the partner once their beast is down here and our cutscene is not running.
+        if (twilight_beast_waiting_drop(actor)) {
+            const bool peerWaiting = r.action == 20 && r.mode <= 1;
+            if (peerWaiting || !twilight_peer_started_beasts(actor)) continue;
+            twilight_wake_beast(actor);
+            if (Tracked* wt = find_tracked(r.room, r.key)) wt->decisionKnown = false;
         }
 
         if (r.health < actor->health) {
@@ -2275,6 +2291,7 @@ void decide_targets(EnemyList& list) {
                 }
             }
         }
+        if (t->targetKnown && bestId != t->targetPlayer) ++s_diagRetargets;
         t->targetPlayer = bestId;
         t->targetKnown = true;
         t->targetStamp = s_tick;
@@ -5328,7 +5345,7 @@ void log_status(const EnemyList* list) {
         "coop_mod: [ENEMY] {} stage='{}' room={} conn={} peer(present={} inGame={} stage='{:.8s}') "
         "gameplay={} here={} matched={} unmatched={} huntingOther={} blows(sent={} replayed={}) "
         "own={} myRoomOwner={} conflicts={} disarmed={} peerLive={} lonely={} instructed={} "
-        "claims={}",
+        "claims={} retargets={}",
         coop_net_is_host() ? "host" : "joiner", stage != nullptr ? stage : "?",
         alink != nullptr ? static_cast<int>(fopAcM_GetRoomNo(alink)) : -1,
         coop_net_connected() ? 1 : 0, peer.present ? 1 : 0, peer.inGame ? 1 : 0, peer.stage,
@@ -5338,7 +5355,7 @@ void log_status(const EnemyList* list) {
             ? static_cast<int>(s_rooms.owner[fopAcM_GetRoomNo(alink)])
             : -1,
         s_diagConflicts, s_diagDisarmed, peer_owner_is_live() ? 1 : 0, s_diagLonely,
-        s_diagInstructed, s_diagClaims);
+        s_diagInstructed, s_diagClaims, s_diagRetargets);
 
     coop_log::info("coop_mod: [OBJ] on={} objects={} blows(sent={} replayed={} lost={}) "
                     "moving={} moves(sent={} received={} applied={}) pushes(sent={} applied={})",
@@ -6199,6 +6216,7 @@ void enemies_on_message(uint8_t type, const uint8_t* payload, size_t size, uint8
             std::memcpy(&entry, payload + 1 + i * sizeof(entry), sizeof(entry));
             Tracked* t = find_tracked(entry.room, entry.key);
             if (t == nullptr) continue;
+            if (t->targetKnown && t->targetPlayer != entry.targetPlayer) ++s_diagRetargets;
             t->targetPlayer = entry.targetPlayer;
             t->targetStamp = s_tick;
             t->targetKnown = true;

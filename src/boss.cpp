@@ -91,8 +91,14 @@ void* collect_boss(void* proc, void* data) {
     auto* list = static_cast<BossList*>(data);
     auto* actor = static_cast<fopAc_ac_c*>(proc);
     if (actor == nullptr || list->count >= kMaxBossActors) return nullptr;
+    if (fpcM_IsCreating(fopAcM_GetID(actor))) return nullptr;
     const uint8_t kind = kind_of(fopAcM_GetName(actor));
     if (kind == kBossKindNone) return nullptr;
+    if ((kind == kBossKindOok || kind == kBossKindOokBoomerang) &&
+        fopAcM_GetRoomNo(actor) == 4 && dComIfGp_getStartStageName() != nullptr &&
+        std::strcmp(dComIfGp_getStartStageName(), "D_MN05") == 0) {
+        return nullptr;
+    }
     const int i = list->count++;
     list->actors[i] = actor;
     list->kinds[i] = kind;
@@ -388,7 +394,7 @@ void write_diababa(fopAc_ac_c* actor, const MsgBossActor& m) {
     }
     if (s_fightOver) return;
 
-    if (actor->health > m.health) actor->health = m.health;
+    actor->health = m.health;
 
     if (m.inDemo || b->mDemoMode != 0) return;
     write_actor(actor, m);
@@ -596,6 +602,12 @@ void write_ook(fopAc_ac_c* actor, const MsgBossActor& m) {
     const s16 keepHealth = actor->health;
 
     if (s_fightOver) return;
+    if (o->action == e_mk_class::ACT_S_DEMO && m.action != e_mk_class::ACT_S_DEMO && !localHit &&
+        o->demoMode != e_mk_class::DEMO_MODE_NONE) {
+        o->demoMode = (o->demoSubMode <= 1)
+                          ? static_cast<s16>(e_mk_class::DEMO_MODE_NONE)
+                          : static_cast<s16>(e_mk_class::DEMO_MODE_FINISH);
+    }
     write_actor(actor, m);
     actor->health = keepHealth;
     if (o->anmNo != m.anmId) {
@@ -1259,12 +1271,22 @@ bool local_ready_now();
 
 bool fight_in_progress(BossList& list) {
     for (int i = 0; i < list.count; ++i) {
-        if (list.kinds[i] != kBossKindDiababa) continue;
-        if (reinterpret_cast<b_bq_class*>(list.actors[i])->mAction != 0) return true;
+        if (list.kinds[i] == kBossKindDiababa &&
+            reinterpret_cast<b_bq_class*>(list.actors[i])->mAction != 0) {
+            return true;
+        }
+        if (list.kinds[i] == kBossKindOok &&
+            reinterpret_cast<e_mk_class*>(list.actors[i])->action != e_mk_class::ACT_S_DEMO) {
+            return true;
+        }
     }
     for (int i = 0; i < kMaxBossActors; ++i) {
-        if (!s_cached[i].used || s_cached[i].kind != kBossKindDiababa) continue;
-        if (s_cached[i].m.action != 0) return true;
+        if (!s_cached[i].used) continue;
+        if (s_cached[i].kind == kBossKindDiababa && s_cached[i].m.action != 0) return true;
+        if (s_cached[i].kind == kBossKindOok &&
+            s_cached[i].m.action != e_mk_class::ACT_S_DEMO) {
+            return true;
+        }
     }
     return false;
 }
@@ -1315,6 +1337,7 @@ int s_waitTicks = 0;
 const int kMaxWaitTicks = 30 * 60;
 bool s_forceStart = false;
 bool s_wasWaiting = false;
+bool s_fightStarted = false;
 int s_bossRoom = -1;
 char s_bossStage[8] = {};
 
@@ -1596,12 +1619,18 @@ void update_wait(BossList& list) {
         coop_log::info("coop_mod: [BOSS] wait timed out after {} ticks, releasing", s_waitTicks);
     }
 
-    const bool underway = fight_in_progress(list) && others_ready_count() >= 1;
+    const bool underway = s_fightStarted ||
+                          (fight_in_progress(list) && others_ready_count() >= 1);
 
     const int missing = players_pending();
     const int missingShown = peers_pending();
 
-    const bool retired = s_fightOver ||
+    bool stageCleared = false;
+    for (int i = 0; i < list.count; ++i) {
+        if (list.kinds[i] == kBossKindDiababa && dComIfGs_isStageBossEnemy()) stageCleared = true;
+        if (list.kinds[i] == kBossKindOok && dComIfGs_isStageMiddleBoss()) stageCleared = true;
+    }
+    const bool retired = s_fightOver || stageCleared ||
                          boss_defeated(dComIfGp_getStartStageName(), s_bossRoom);
     const bool waiting =
         wait_enabled() && !s_forceStart && missing > 0 && !underway && !retired;
@@ -1632,10 +1661,12 @@ void update_wait(BossList& list) {
         release_fight(list);
         s_waitTicks = 0;
         s_wasWaiting = false;
+        s_fightStarted = true;
         s_waitText[0] = '\0';
         coop_log::info("coop_mod: [BOSS] wait over ({}), starting fight",
             s_forceStart ? "continue anyway" : "everyone is here");
     } else {
+        if (s_readyLatched && !retired) s_fightStarted = true;
         queue_wait_popup(false, "", "");
     }
 }
@@ -1649,6 +1680,7 @@ void boss_force_start() {
 
 void boss_reset_fight_state() {
     s_fightOver = false;
+    s_fightStarted = false;
     s_hostInDemo = false;
     s_hostFightOver = false;
     s_bossSeen = false;
@@ -1977,8 +2009,12 @@ uint8_t decide_fight_owner(const BossList& list) {
     }
 
     const auto playing = [&](uint8_t id) {
-        return fight_player_here(id, stage) && !coop_player_paused(id);
+        return fight_player_here(id, stage) && !coop_player_paused(id) &&
+               !coop_player_returning(id) && player_ready(id);
     };
+    if (s_fightOwner != kCoopNoPlayer && playing(s_fightOwner)) {
+        return s_fightOwner;
+    }
     if (room >= 0) {
         const uint8_t owner = enemies_room_owner_player(room);
         if (owner != kCoopNoPlayer && playing(owner)) return owner;

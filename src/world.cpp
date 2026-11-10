@@ -16,6 +16,13 @@
 #include "d/actor/d_a_tbox.h"
 #include "d/actor/d_a_tbox2.h"
 #include "d/actor/d_a_door_shutter.h"
+#include "d/actor/d_a_door_mbossL1.h"
+#include "d/actor/d_a_door_bossL1.h"
+#include "d/actor/d_a_door_bossL5.h"
+#include "d/actor/d_a_door_boss.h"
+#include "d/actor/d_a_obj_kshutter.h"
+#include "d/actor/d_a_obj_kgate.h"
+#include "d/actor/d_a_obj_rgate.h"
 #include "d/d_door_param2.h"
 #include "d/d_tresure.h"
 #include "d/d_bg_w.h"
@@ -758,25 +765,150 @@ bool keep_own_keys() {
     return coop_session(kSessKeepKeys, cfg_bool(features_vars().keepKeys, false));
 }
 
+const char* boss_door_l1_event2() {
+    const char* stage = dComIfGp_getStartStageName();
+    if (stage == nullptr) return "DEFAULT_BS_SHUTTER_L1_F_2";
+    if (std::strncmp(stage, "D_MN04", 6) == 0 || std::strncmp(stage, "D_MN54", 6) == 0) {
+        return "DEFAULT_BS_SHUTTER_L2_F_2";
+    }
+    if (std::strncmp(stage, "D_MN10", 6) == 0) return "DEFAULT_BS_SHUTTER_L4_F_2";
+    if (std::strncmp(stage, "D_MN06", 6) == 0) return "DEFAULT_BS_SHUTTER_L6_F_2";
+    if (std::strncmp(stage, "D_MN07", 6) == 0) return "DEFAULT_BS_SHUTTER_L7_F_2";
+    if (std::strncmp(stage, "D_MN08", 6) == 0) return "DEFAULT_BS_SHUTTER_L8_F_2";
+    if (std::strncmp(stage, "D_MN09", 6) == 0) return "DEFAULT_BS_SHUTTER_L9_F_2";
+    return "DEFAULT_BS_SHUTTER_L1_F_2";
+}
+
 // A locked door decides it is locked when it loads. If someone else opens it while you are
 // already in the room, the switch bit arrives but the door still shows its lock, and it wants a
-// key you may no longer have. Unlock any loaded key door whose switch is already set.
+// key you may no longer have. Unlock any loaded key door, key shutter, boss door or gate whose
+// switch is already set.
 void* unlock_opened_key_door(void* proc, void* data) {
     auto* actor = static_cast<fopAc_ac_c*>(proc);
-    if (actor == nullptr || fopAcM_GetName(actor) != fpcNm_DOOR20_e) return nullptr;
-    auto* door = reinterpret_cast<daDoor20_c*>(actor);
-    if (!door->field_0x5f0) return nullptr;
-    if (door_param2_c::getFrontOption(actor) != 2 && door_param2_c::getBackOption(actor) != 2) {
+    if (actor == nullptr || fpcM_IsCreating(fopAcM_GetID(actor))) return nullptr;
+    const s16 name = fopAcM_GetName(actor);
+    const int roomNo = fopAcM_GetRoomNo(actor);
+
+    if (name == fpcNm_DOOR20_e) {
+        auto* door = reinterpret_cast<daDoor20_c*>(actor);
+        if (!door->field_0x5f0) return nullptr;
+        if (door_param2_c::getFrontOption(actor) != 2 && door_param2_c::getBackOption(actor) != 2) {
+            return nullptr;
+        }
+        const int swBit = door_param2_c::getSwbit(actor);
+        if (swBit == 0xff || !dComIfGs_isSwitch(swBit, roomNo)) return nullptr;
+        door->field_0x5f0 = false;
+        if (door->field_0x5ec != static_cast<u32>(-1) && !fpcM_IsCreating(door->field_0x5ec)) {
+            fopAcM_delete(door->field_0x5ec);
+            door->field_0x5ec = static_cast<u32>(-1);
+        }
+        ++*static_cast<int*>(data);
         return nullptr;
     }
-    const int swBit = door_param2_c::getSwbit(actor);
-    if (swBit == 0xff || !dComIfGs_isSwitch(swBit, 0xffffffff)) return nullptr;
-    door->field_0x5f0 = false;
-    if (door->field_0x5ec != static_cast<u32>(-1) && !fpcM_IsCreating(door->field_0x5ec)) {
-        fopAcM_delete(door->field_0x5ec);
-        door->field_0x5ec = static_cast<u32>(-1);
+
+    if (name == fpcNm_Obj_Kshutter_e) {
+        auto* shtr = reinterpret_cast<daObjKshtr_c*>(actor);
+        if (!shtr->mIsCheckKey || shtr->mAction != 0) return nullptr;
+        if (shtr->mSwNo == 0xff || !dComIfGs_isSwitch(shtr->mSwNo, roomNo)) return nullptr;
+        shtr->field_0x5ec = true;
+        if (shtr->mType != 3) {
+            if (shtr->mpBckAnm != nullptr) shtr->mpBckAnm->setFrame(shtr->mpBckAnm->getEndFrame());
+        } else {
+            shtr->field_0x5fc = -450.0f;
+        }
+        if (shtr->mpBgW != nullptr && shtr->mpBgW->ChkUsed()) {
+            dComIfG_Bgsp().Release(shtr->mpBgW);
+        }
+        if (shtr->mKeyHoleId != fpcM_ERROR_PROCESS_ID_e && !fpcM_IsCreating(shtr->mKeyHoleId)) {
+            fopAcM_delete(shtr->mKeyHoleId);
+            shtr->mKeyHoleId = fpcM_ERROR_PROCESS_ID_e;
+        }
+        shtr->attention_info.flags = 0;
+        shtr->mAction = 2;
+        ++*static_cast<int*>(data);
+        return nullptr;
     }
-    ++*static_cast<int*>(data);
+
+    if (name == fpcNm_L1MBOSS_DOOR_e) {
+        auto* door = reinterpret_cast<daMBdoorL1_c*>(actor);
+        if (door->mKeyHoleId == -1) return nullptr;
+        if (door_param2_c::getFrontOption(actor) != 2) return nullptr;
+        const int swBit = door_param2_c::getSwbit(actor);
+        if (swBit == 0xff || !dComIfGs_isSwitch(swBit, roomNo)) return nullptr;
+        if (!fpcM_IsCreating(static_cast<fpc_ProcID>(door->mKeyHoleId))) {
+            fopAcM_delete(static_cast<fpc_ProcID>(door->mKeyHoleId));
+            door->mKeyHoleId = -1;
+        }
+        ++*static_cast<int*>(data);
+        return nullptr;
+    }
+
+    if (name == fpcNm_L1BOSS_DOOR_e) {
+        auto* door = reinterpret_cast<daBdoorL1_c*>(actor);
+        if (door->mKeyHoleId == static_cast<u32>(-1) && door->field_0x598 == 0) return nullptr;
+        const int swBit = door_param2_c::getSwbit(actor);
+        if (swBit == 0xff || !dComIfGs_isSwitch(swBit, roomNo)) return nullptr;
+        if (door->mKeyHoleId != static_cast<u32>(-1) && !fpcM_IsCreating(door->mKeyHoleId)) {
+            fopAcM_delete(door->mKeyHoleId);
+            door->mKeyHoleId = static_cast<u32>(-1);
+        }
+        door->field_0x598 = 0;
+        door->field_0x59e = dComIfGp_getEventManager().getEventIdx(
+            door, boss_door_l1_event2(), 0xff);
+        ++*static_cast<int*>(data);
+        return nullptr;
+    }
+
+    if (name == fpcNm_L5BOSS_DOOR_e) {
+        auto* door = reinterpret_cast<daBdoorL5_c*>(actor);
+        if (door->mKeyHoleId == static_cast<u32>(-1) && door->field_0x590 == 0) return nullptr;
+        const int swBit = door_param2_c::getSwbit(actor);
+        if (swBit == 0xff || !dComIfGs_isSwitch(swBit, roomNo)) return nullptr;
+        door->deleteKey();
+        door->field_0x590 = 0;
+        ++*static_cast<int*>(data);
+        return nullptr;
+    }
+
+    if (name == fpcNm_BOSS_DOOR_e) {
+        auto* door = reinterpret_cast<daBdoor_c*>(actor);
+        if (!door->mLocked) return nullptr;
+        const int swBit = door_param2_c::getSwbit(actor);
+        if (swBit == 0xff || !dComIfGs_isSwitch(swBit, roomNo)) return nullptr;
+        door->mLocked = false;
+        ++*static_cast<int*>(data);
+        return nullptr;
+    }
+
+    if (name == fpcNm_Obj_KkrGate_e) {
+        auto* gate = reinterpret_cast<daObjKGate_c*>(actor);
+        if (gate->mAction != 0 || (gate->mNameArg != 0 && gate->mNameArg != 2)) return nullptr;
+        const u8 sw = gate->getSwNo();
+        if (sw == 0xff || !dComIfGs_isSwitch(sw, roomNo)) return nullptr;
+        gate->mEventID = -1;
+        gate->mMapToolID = 0xff;
+        if (gate->mNameArg != 2) {
+            gate->mGateLAngle = 0x38e3;
+            gate->mGateRAngle = -0x38e3;
+            gate->field_0xbed = 1;
+        }
+        gate->mAction = 2;
+        ++*static_cast<int*>(data);
+        return nullptr;
+    }
+
+    if (name == fpcNm_Obj_RiderGate_e) {
+        auto* gate = reinterpret_cast<daObjRgate_c*>(actor);
+        if (gate->mAction != 0) return nullptr;
+        const u8 sw = gate->getSwNo();
+        if (sw == 0xff || !dComIfGs_isSwitch(sw, roomNo)) return nullptr;
+        gate->mEventID = -1;
+        gate->mMapToolID = 0xff;
+        gate->mAction = 2;
+        ++*static_cast<int*>(data);
+        return nullptr;
+    }
+
     return nullptr;
 }
 
@@ -1532,6 +1664,7 @@ void handle_full(const MsgWorldFull& msg) {
         if (baselineValid) keep_mem_local(stage, s_base.mem, memBefore);
         open_chests_from_bits(newlySet);
         remove_collected_from_bits(newlySet);
+        unlock_opened_key_doors();
         break;
     }
     case kRegionDan: {
@@ -1544,6 +1677,7 @@ void handle_full(const MsgWorldFull& msg) {
             kDanSize, false);
         keep_dan_local(danBytes, danBefore);
         if (baselineValid && s_base.haveDan) keep_dan_local(s_base.dan, danBefore);
+        unlock_opened_key_doors();
         break;
     }
     case kRegionTmp: {
@@ -1626,6 +1760,7 @@ void handle_full(const MsgWorldFull& msg) {
             if (!actors) {
                 keep_zone_local(msg.room, target, zoneBefore);
                 if (base != nullptr) keep_zone_local(msg.room, base, zoneBefore);
+                unlock_opened_key_doors();
             }
             break;
         }
@@ -2434,6 +2569,7 @@ void apply_shop_sold_out(const MsgShopSoldOut& msg) {
         s_jumpKnown[byte - kMemSwitchFirst] =
             static_cast<uint8_t>(s_jumpKnown[byte - kMemSwitchFirst] | (1 << (msg.sw & 7)));
     }
+    if (sameSlot) unlock_opened_key_doors();
     coop_log::info("coop_mod: [SWITCH] remote stage={} sw={} live={}", name, msg.sw, sameSlot);
 }
 
@@ -2821,6 +2957,7 @@ void world_on_message(uint8_t type, const uint8_t* payload, size_t size, uint8_t
 
             open_chests_from_bits(newlySet);
             remove_collected_from_bits(newlySet);
+            unlock_opened_key_doors();
         }
         break;
     }
@@ -2852,6 +2989,7 @@ void world_on_message(uint8_t type, const uint8_t* payload, size_t size, uint8_t
         apply_bytes(danBytes, (baselineValid && s_base.haveDan) ? s_base.dan : nullptr, msg);
         keep_dan_local(danBytes, danBefore);
         if (baselineValid && s_base.haveDan) keep_dan_local(s_base.dan, danBefore);
+        unlock_opened_key_doors();
         break;
     }
     case kRegionZone: {
@@ -2866,6 +3004,7 @@ void world_on_message(uint8_t type, const uint8_t* payload, size_t size, uint8_t
             apply_bytes(zoneBytes, haveBase ? s_base.zone[msg.room] : nullptr, msg);
             keep_zone_local(msg.room, zoneBytes, zoneBefore);
             if (haveBase) keep_zone_local(msg.room, s_base.zone[msg.room], zoneBefore);
+            unlock_opened_key_doors();
             break;
         }
         break;

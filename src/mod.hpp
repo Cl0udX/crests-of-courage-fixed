@@ -705,6 +705,12 @@ void drops_init();
 
 void twilight_update();
 void twilight_on_message(uint8_t type, const uint8_t* payload, size_t size);
+// A Shadow Beast still up in the sky, waiting for this game's own portal cutscene to drop it.
+bool twilight_beast_waiting_drop(fopAc_ac_c* actor);
+// A partner is fighting a beast this game still keeps in the sky: retires our idle drop cutscene for
+// its group. False when this game's own cutscene is dropping them (or a story one owns them).
+bool twilight_peer_started_beasts(fopAc_ac_c* beast);
+void twilight_wake_beast(fopAc_ac_c* actor);
 void skipvote_update();
 void skipvote_on_message(const uint8_t* payload, size_t size, uint8_t from);
 
