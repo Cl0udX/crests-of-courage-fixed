@@ -217,14 +217,49 @@ void sync_wolf_world_state(bool sweepActors) {
     stage_stag_info_class* stag = dComIfGp_getStageStagInfo();
     const int curSaveTbl = stag != nullptr ? dStage_stagInfo_GetSaveTbl(stag) : -1;
 
+    int learnedHowlSkills = 0;
+    for (int k = 0; k < kSkillCount; ++k) {
+        if (k != 1 && flag_on(k)) ++learnedHowlSkills;
+    }
+    const int maxActiveWolves =
+        learnedHowlSkills < kWolfGoneCount ? kWolfGoneCount - learnedHowlSkills : 0;
+    int activeWolves = 0;
+
     for (int i = 0; i < kWolfGoneCount; ++i) {
-        const bool gone = dComIfGs_isEventBit(gone_label(i)) != 0;
+        bool gone = dComIfGs_isEventBit(gone_label(i)) != 0;
         bool howled = dComIfGs_isEventBit(howl_label(i)) != 0;
-        if (gone && !howled) {
+        if (learnedHowlSkills >= kWolfGoneCount && (!gone || !howled)) {
+            s_applying = true;
+            if (!howled) dComIfGs_onEventBit(howl_label(i));
+            if (!gone) dComIfGs_onEventBit(gone_label(i));
+            s_applying = false;
+            howled = true;
+            gone = true;
+            s_sent = 0;
+            s_sentGone = 0;
+            coop_log::info(
+                "coop_mod: [SKILLS] all skills learned, auto-retired leftover wolf/stone {}",
+                i + 2);
+        } else if (gone && !howled) {
             s_applying = true;
             dComIfGs_onEventBit(howl_label(i));
             s_applying = false;
             howled = true;
+            s_sent = 0;
+        } else if (howled && !gone) {
+            if (activeWolves >= maxActiveWolves) {
+                s_applying = true;
+                dComIfGs_onEventBit(gone_label(i));
+                s_applying = false;
+                gone = true;
+                s_sent = 0;
+                s_sentGone = 0;
+                coop_log::info(
+                    "coop_mod: [SKILLS] retired surplus active wolf {} (learnedHowlSkills={})",
+                    i + 2, learnedHowlSkills);
+            } else {
+                ++activeWolves;
+            }
         }
         const int tbl = kWolfSaveTbl[i];
         const int sw = kWolfSwBit[i];
