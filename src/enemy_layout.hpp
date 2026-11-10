@@ -35,3 +35,5 @@ const EnemyAnmLayoutExt* coop_enemy_anm_wb(int& count);
 const EnemyAnmLayoutExt* coop_enemy_anm_yk(int& count);
 const EnemyAnmLayoutExt* coop_enemy_anm_po(int& count);
 const EnemyTmrLayoutExt* coop_enemy_tmr_yk(int& count);
+bool coop_enemy_po_soul_ripped(const void* actor);
+uint8_t coop_enemy_po_bit_sw(const void* actor);

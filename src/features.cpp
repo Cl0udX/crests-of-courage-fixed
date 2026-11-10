@@ -1404,7 +1404,7 @@ bool movement_event(const char* name) {
     if (name == nullptr) return true;
     const std::string n = name;
     return n.empty() || n == "-" || n == "NO DATA" || n == "DEFAULT_START" || n == "demo38_01" ||
-           n == "SCENE_EXIT" || n == "OLD_DOOR_IN" || n == "door_i" || n == "SAVEREQ" || n == "POTAL_WARPIN" ||
+           n == "SCENE_EXIT" || n == "OLD_DOOR_IN" || n == "door_i" || n == "POTAL_WARPIN" ||
            n == "MHINT_TALK" || n == "NORMAL_COMEBACK" || n.find("DOOR") != std::string::npos;
 }
 

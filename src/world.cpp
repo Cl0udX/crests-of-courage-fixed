@@ -2250,7 +2250,8 @@ HookAction on_stage_load_pre(ModContext*, void*, void*, void*) {
         coop_log::info("coop_mod: [WORLD] stage load, transform/twilight flags {:#04x}/{:#04x}", cur[0], cur[1]);
         std::memset(s_statusBPending, 0, sizeof(s_statusBPending));
     }
-    if (features_load_is_cutscene() && s_storyPendingBits != 0) {
+    const bool cutsceneLoad = features_load_is_cutscene() || dComIfGp_getStartStageLayer() >= 8;
+    if (cutsceneLoad && s_storyPendingBits != 0) {
         coop_log::info("coop_mod: [STORY] {} remote flags kept for the next load: this one is part of a scene",
             s_storyPendingBits);
         story_repair_companions(info->getSavedata().getEvent().mEvent);
@@ -2274,6 +2275,9 @@ const OwnScene kOwnScene[] = {
     {dSv_event_flag_c::M_016, "F_SP104"},
     {dSv_event_flag_c::M_017, "F_SP108"},
     {dSv_event_flag_c::M_019, "F_SP108"},
+    {dSv_event_flag_c::M_071, "F_SP115"},
+    {dSv_event_flag_c::F_0250, "R_SP107"},
+    {dSv_event_flag_c::F_0250, "F_SP122"},
 };
 
 const int kMaxHeldLoads = 3;

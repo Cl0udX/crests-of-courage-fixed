@@ -76,6 +76,22 @@ Logs: `[PORTAL]`.
   - **F5 (`fight_in_progress` y `s_fightStarted`):** incluye `kBossKindOok` (`action != ACT_S_DEMO`) y añade latch `s_fightStarted` para no volver a bloquear con `"Waiting for 1 Player"` a mitad de pelea.
   - **F6 (`collect_boss` y `retired`):** ignora actores aún en construcción (`fpcM_IsCreating`), excluye al Ook guionizado de `D_MN05` sala 4 y consulta `dComIfGs_isStageBossEnemy()` / `dComIfGs_isStageMiddleBoss()` en `retired`.
 
+## Enemigos en mazmorras, Poe de Jovani y Cinemáticas encadenadas (`v1.10.3`, 2026-11-09)
+
+Probado `v1.10.2` en el Templo del Agua (`D_MN01` / `D_MN01A`), Fuente de Lanayru (`F_SP115`), Castillo (`R_SP107`) y Casa de Jovani (`R_SP160`). La puerta del jefe de `D_MN01` se desbloqueó remotamente sin problemas (`[WORLD] 1 key door(s) opened by a partner unlocked`). Se detectaron y corrigieron 3 causas raíz adicionales:
+
+### 1. Enemigos desincronizados en salas re-visitadas y bancos de Skullfish (`src/enemies.cpp`)
+- **Salas re-visitadas (`note_loaded_rooms` / `room_objects_loaded`):** `note_loaded_rooms()` consultaba `info->getZone(i).getRoomNo()`, que es la tabla persistente de zonas visitadas del guardado (`mZone[0..31]`), no las salas cargadas en memoria. Al salir de una sala y volver a entrar (salas 2, 7, 8, 11, 12 en `D_MN01`), `s_settledRoom[r]` seguía en `true` y `s_settleTicks` en `0`, por lo que todos los enemigos fijos de la sala se clasificaban como spawns dinámicos (`runtime = true`, `compute_sequence_key`) y divergían entre jugadores (53 de los 91 `[ENEMY-DYN]` del log). Ahora se comprueba el objeto de escena real (`room_of_scene_class::field_0x1d4 < 0`) tanto en `note_loaded_rooms()` como en `on_proc_execute_pre()`, y al descargarse una sala se limpian `s_settledRoom`, `forget_placed_enemies_in` y `s_seq`.
+- **Hijos de Skullfish (`fpcNm_E_SG_e`, `compute_placement_key`):** el líder del banco crea a los hijos en `daE_SG_Create` con posición y ángulo aleatorios (`cM_rndFX`), lo que daba claves distintas en cada PC (los otros 38 `[ENEMY-DYN]` de `D_MN01`). Ahora para `fpcNm_E_SG_e` con `(param & 0xFF) >= 0x64` e `parentActorID` válido se usa el `home.pos` / `home.angle.y` del padre junto con el `param` determinista (`0x64 + i`).
+
+### 2. Softlock al llegar tarde a cinemáticas encadenadas tras un jefe (`src/features.cpp`, `src/world.cpp`)
+- **Causa (`SAVEREQ` -> `demo20_01` en `F_SP115`):** al entrar al portal tras Morpheel (`BOSS_WARPIN_M`), el juego carga `F_SP115` en la capa de cinemática 9, ejecuta `SAVEREQ` y recarga `F_SP115` capa 9 para lanzar `demo20_01` (que activa `M_071` y teletransporta a `F_SP121`). Como `"SAVEREQ"` estaba en `movement_event()`, la recarga posterior no se reconocía como parte de una escena (`features_load_is_cutscene() == false`), y `on_stage_load_pre` aplicaba `M_071` (enviado por el jugador que iba adelantado) antes de que arrancara `demo20_01`, dejando al segundo jugador atrapado en `F_SP115` sin cinemática ni teletransporte.
+- **Arreglo:** se quita `"SAVEREQ"` de `movement_event()`, en `on_stage_load_pre()` se retienen las flags remotas también cuando `dComIfGp_getStartStageLayer() >= 8` (capas forzadas de cinemática), y se añaden `{M_071, "F_SP115"}` y `{F_0250, "R_SP107"}` / `{"F_SP122"}` a `kOwnScene[]`.
+
+### 3. Softlock con el Poe de la Casa de Jovani (`daE_HP_c` / `e_po_class`, `src/enemies.cpp`, `src/enemy_layout_po.cpp`)
+- **Causa (`R_SP160` sala 5):** cuando el dueño remata al Poe (`daE_HP_c::mAction = 6`, `executeDead`), si `apply_enemy_decision` escribe `mAction = 6` en el otro jugador, `executeDead()` (con `field_0x71c == 0`) ejecuta `case 0:` localmente: fuerza `procWolfAtnActorMoveInit()` y `ForcedDemo` sobre el Link del otro jugador aunque esté hablando con Jovani o lejos, bloqueando el evento, y además `is_downed_alive()` impedía marcar `t->killed = true` y enviar `send_gone`.
+- **Arreglo:** al recibir la acción de remate (`action == 6` en `fpcNm_E_HP_e`, o `11`/`12` en `fpcNm_E_PO_e`) o `r.gone`, no se ejecuta la cinemática de remate sobre el Link local: se activa directamente su switch (`hp->bitSw` / `po->BitSW`), se crea el efecto de desaparición y se elimina el Poe. Además `is_poe_soul_ripped()` marca `t->killed = true` en el dueño para enviar `kMsgEnemyGone`, y `on_switch_post()` permite enviar `kMsgEnemySwitch` aunque haya un evento local en curso.
+
 ## Pendiente
 
 1. **Probar en el juego (`v1.10.2`)** (con backup de saves):

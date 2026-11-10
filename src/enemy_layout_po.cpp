@@ -33,3 +33,15 @@ const EnemyAnmLayoutExt* coop_enemy_anm_po(int& count) {
     count = (int)(sizeof(kAnm) / sizeof(kAnm[0]));
     return kAnm;
 }
+
+bool coop_enemy_po_soul_ripped(const void* actor) {
+    if (actor == nullptr) return false;
+    const auto* po = static_cast<const e_po_class*>(actor);
+    return po->mActionID == ACT_WOLF_BITE || po->mActionID == ACT_DEAD ||
+           (po->mType >= 3 && po->mActionID == 7);
+}
+
+uint8_t coop_enemy_po_bit_sw(const void* actor) {
+    if (actor == nullptr) return 0xFF;
+    return static_cast<const e_po_class*>(actor)->BitSW;
+}

@@ -135,8 +135,10 @@
 #include "d/d_com_inf_game.h"
 
 #include "d/d_save.h"
+#include "d/d_s_room.h"
 #include "f_op/f_op_actor_iter.h"
 #include "f_op/f_op_actor_mng.h"
+#include "f_op/f_op_scene_mng.h"
 #include "d/d_cc_d.h"
 #include "d/d_cc_s.h"
 #include "f_pc/f_pc_executor.h"
@@ -413,10 +415,20 @@ uint32_t compute_placement_key(fopAc_ac_c* actor) {
         h = fnv(h, &param, sizeof(param));
         return h != 0 ? h : 1u;
     }
-    const int32_t x = round_unit(birth != nullptr ? birth->homeX : actor->home.pos.x);
-    const int32_t y = round_unit(birth != nullptr ? birth->homeY : actor->home.pos.y);
-    const int32_t z = round_unit(birth != nullptr ? birth->homeZ : actor->home.pos.z);
-    const int16_t angleY = birth != nullptr ? birth->homeAngleY : actor->home.angle.y;
+    const BirthRecord* posBirth = birth;
+    fopAc_ac_c* posActor = actor;
+    if (name == fpcNm_E_SG_e && (param & 0xFFu) >= 0x64u && actor->parentActorID != fpcM_ERROR_PROCESS_ID_e) {
+        if (const BirthRecord* pb = find_birth(actor->parentActorID)) {
+            posBirth = pb;
+        } else if (fopAc_ac_c* pa = fopAcM_SearchByID(actor->parentActorID)) {
+            posBirth = nullptr;
+            posActor = pa;
+        }
+    }
+    const int32_t x = round_unit(posBirth != nullptr ? posBirth->homeX : posActor->home.pos.x);
+    const int32_t y = round_unit(posBirth != nullptr ? posBirth->homeY : posActor->home.pos.y);
+    const int32_t z = round_unit(posBirth != nullptr ? posBirth->homeZ : posActor->home.pos.z);
+    const int16_t angleY = posBirth != nullptr ? posBirth->homeAngleY : posActor->home.angle.y;
     h = fnv(h, &name, sizeof(name));
     h = fnv(h, &param, sizeof(param));
     h = fnv(h, &setID, sizeof(setID));
@@ -456,27 +468,34 @@ bool room_is_loaded(int8_t room) {
     return room >= 0 && room < kRooms && s_roomLoaded[room];
 }
 
+bool room_objects_loaded(int r) {
+    if (r < 0 || r >= kRooms) return false;
+    if (dComIfGp_roomControl_checkStatusFlag(r, 8)) return false;
+    const fpc_ProcID id = dStage_roomControl_c::getStatusProcID(r);
+    if (id == fpcM_ERROR_PROCESS_ID_e) return false;
+    auto* scene = static_cast<room_of_scene_class*>(fopScnM_SearchByID(id));
+    return scene != nullptr && scene->field_0x1d4 < 0;
+}
+
 void note_loaded_rooms(dSv_info_c* info) {
     if (info == nullptr) return;
     bool wasLoaded[kRooms];
     for (int i = 0; i < kRooms; ++i) {
         wasLoaded[i] = s_roomLoaded[i];
-        s_roomLoaded[i] = false;
-    }
-    for (int i = 0; i < 32; ++i) {
-        const int r = info->getZone(i).getRoomNo();
-        if (r >= 0 && r < kRooms) s_roomLoaded[r] = true;
+        s_roomLoaded[i] = room_objects_loaded(i);
     }
 
     for (int i = 0; i < kRooms; ++i) {
         if (wasLoaded[i] && !s_roomLoaded[i]) {
             s_settledRoom[i] = false;
             forget_placed_enemies_in(i);
+            for (int k = 0; k < kSeqSlots; ++k) {
+                if (s_seq[k].used && s_seq[k].room == i) s_seq[k] = SeqCounter{};
+            }
         }
     }
-    for (int i = 0; i < 32; ++i) {
-        const int room = info->getZone(i).getRoomNo();
-        if (room < 0 || room >= kRooms || s_settledRoom[room]) continue;
+    for (int room = 0; room < kRooms; ++room) {
+        if (!s_roomLoaded[room] || s_settledRoom[room]) continue;
         s_settledRoom[room] = true;
         s_settleTicks = kSettleTicks;
         coop_log::info("coop_mod: [ENEMY] room {} loaded, later actors are runtime spawns", room);
@@ -1653,6 +1672,15 @@ void settle_after_decision(fopAc_ac_c* actor) {
     }
 }
 
+extern bool s_applyingEnemySwitch;
+
+void turn_on_enemy_switch_local(fopAc_ac_c* actor, uint8_t sw) {
+    if (actor == nullptr || sw == 0xFF || fopAcM_isSwitch(actor, sw)) return;
+    s_applyingEnemySwitch = true;
+    fopAcM_onSwitch(actor, sw);
+    s_applyingEnemySwitch = false;
+}
+
 bool apply_enemy_decision(fopAc_ac_c* actor, int16_t action, int16_t mode, Tracked* t,
                           const int16_t* timers, uint8_t timerCount, int age) {
     if (actor == nullptr || t == nullptr || action == kEnemyNoAction) return false;
@@ -1666,6 +1694,36 @@ bool apply_enemy_decision(fopAc_ac_c* actor, int16_t action, int16_t mode, Track
         if (hz->eventInfo.checkCommandDemoAccrpt() && !(hz->mAction == 1 && (hz->mMode == 4 || hz->mMode == 5))) {
             dComIfGp_event_reset();
         }
+    }
+    if (fopAcM_GetName(actor) == fpcNm_E_HP_e) {
+        auto* hp = static_cast<daE_HP_c*>(actor);
+        if (action == 6) {
+            t->decisionKnown = true;
+            t->lastAction = action;
+            t->lastMode = mode;
+            t->health = 0;
+            t->killed = true;
+            t->goneSent = true;
+            turn_on_enemy_switch_local(actor, hp->bitSw);
+            fopAcM_createDisappear(actor, &actor->current.pos, 8, 3, 0xff);
+            fopAcM_delete(actor);
+            return true;
+        }
+        if (action == 5 && hp->mAction != 5 && hp->field_0x71c == 0) {
+            hp->field_0x71c = 90;
+        }
+    }
+    if (fopAcM_GetName(actor) == fpcNm_E_PO_e && (action == 11 || action == 12)) {
+        t->decisionKnown = true;
+        t->lastAction = action;
+        t->lastMode = mode;
+        t->health = 0;
+        t->killed = true;
+        t->goneSent = true;
+        turn_on_enemy_switch_local(actor, coop_enemy_po_bit_sw(actor));
+        fopAcM_createDisappear(actor, &actor->current.pos, 8, 3, 0xff);
+        fopAcM_delete(actor);
+        return true;
     }
     t->decisionKnown = true;
     t->lastAction = action;
@@ -1906,6 +1964,18 @@ bool is_downed_alive(fopAc_ac_c* actor) {
     return name == fpcNm_E_S1_e || name == fpcNm_E_HP_e || name == fpcNm_E_PO_e;
 }
 
+bool is_poe_soul_ripped(fopAc_ac_c* actor) {
+    if (actor == nullptr) return false;
+    const s16 name = fopAcM_GetName(actor);
+    if (name == fpcNm_E_HP_e) {
+        return static_cast<daE_HP_c*>(actor)->mAction == 6;
+    }
+    if (name == fpcNm_E_PO_e) {
+        return coop_enemy_po_soul_ripped(actor);
+    }
+    return false;
+}
+
 void send_gone(int8_t room, uint32_t key) {
     MsgEnemyGone msg{};
     msg.key = key;
@@ -1982,7 +2052,9 @@ void sweep(EnemyList& list, bool host) {
 
         (void)fresh;
 
-        if (t->health > 0 && health <= 0 && !is_downed_alive(actor)) t->killed = true;
+        if ((t->health > 0 && health <= 0 && !is_downed_alive(actor)) || is_poe_soul_ripped(actor)) {
+            t->killed = true;
+        }
         t->health = health;
         if (t->killed) ++t->killedTicks;
     }
@@ -2045,14 +2117,21 @@ void apply_remote(EnemyList& list) {
 
         if (r.gone) {
             if (actor->health > 0) actor->health = 0;
+            const s16 goneName = fopAcM_GetName(actor);
+            if (goneName == fpcNm_E_HP_e) {
+                turn_on_enemy_switch_local(actor, static_cast<daE_HP_c*>(actor)->bitSw);
+            } else if (goneName == fpcNm_E_PO_e) {
+                turn_on_enemy_switch_local(actor, coop_enemy_po_bit_sw(actor));
+            }
             Tracked* t = find_tracked(r.room, r.key);
             if (t != nullptr) {
                 t->health = 0;
                 t->killed = true;
                 t->goneSent = true;
 
-                if (t->killedTicks > kForceDeleteTicks && !t->deleteAsked && actor->health <= 0 &&
-                    !is_downed_alive(actor) && deleteCount < kMaxTracked) {
+                const bool forceDeletePoe = goneName == fpcNm_E_HP_e || goneName == fpcNm_E_PO_e;
+                if ((forceDeletePoe || (t->killedTicks > kForceDeleteTicks && !is_downed_alive(actor))) &&
+                    !t->deleteAsked && actor->health <= 0 && deleteCount < kMaxTracked) {
                     t->deleteAsked = true;
                     toDelete[deleteCount++] = actor;
                 }
@@ -2544,7 +2623,10 @@ void on_switch_off_post(ModContext*, void* args, void*, void*) {
 
 void on_switch_post(ModContext*, void* args, void*, void*) {
     if (s_switchWasOn || s_applyingEnemySwitch || s_execDepth <= 0 || s_execDepth > 8) return;
-    if (!coop_net_connected() || !enemies_enabled_now()) return;
+    if (!coop_net_connected() || !enemies_setting_on() || daAlink_getAlinkActorClass() == nullptr ||
+        !peer_shares_stage()) {
+        return;
+    }
     fopAc_ac_c* actor = fopAcM_SearchByID(s_execStack[s_execDepth - 1]);
 
     if (actor == nullptr || fopAcM_GetGroup(actor) != fopAc_ENEMY_e || !syncable(actor)) return;
@@ -2614,6 +2696,13 @@ HookAction on_proc_execute_pre(ModContext*, void* args, void*, void*) {
             s_seenProc[static_cast<uint32_t>(proc->id) % kSeenSlots] = proc->id;
             fopAc_ac_c* actor = fopAcM_SearchByID(proc->id);
             if (actor != nullptr && fopAcM_GetGroup(actor) == fopAc_ENEMY_e) {
+                const int r = fopAcM_GetRoomNo(actor);
+                if (r >= 0 && r < kRooms && !s_settledRoom[r] && room_objects_loaded(r)) {
+                    s_roomLoaded[r] = true;
+                    s_settledRoom[r] = true;
+                    s_settleTicks = kSettleTicks;
+                    coop_log::info("coop_mod: [ENEMY] room {} loaded, later actors are runtime spawns", r);
+                }
                 record_birth(actor, s_settleTicks > 0);
                 if (s_settleTicks > 0) note_placed_enemy(actor);
             }
