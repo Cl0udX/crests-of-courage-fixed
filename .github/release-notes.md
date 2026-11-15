@@ -48,3 +48,4 @@ this build:
 - fixed golden wolves, howling stones, and hidden skills desyncing or spawning extra wolves
 - fixed loaded poes duplicating when caught at the same time
 - fixed dungeon bosses and minibosses not syncing or softlocking late joiners during cutscenes
+- fixed a divide-by-zero crash when syncing guay (crow) dive attacks

@@ -1655,7 +1655,7 @@ const EnemyActLayout kEnemyAct[] = {
     ACT(0x01ef, e_kg_class,              mAction,          field_0x678),
     ACT(0x01f0, e_kr_class,              mCurAction,       field_0x672),
     ACT(0x01f1, daE_SW_c,                mActionMode,      mMoveMode),
-    ACT(0x01f2, daE_GE_c,                mSubMode,         mMode),
+    ACT(0x01f2, daE_GE_c,                mActionMode,      mMode),
     ACT(0x01f4, daE_YM_c,                mAction,          mMode),
     ACT(0x01f6, daE_YMB_c,               mAction,          mMode),
     ACT(0x01fa, e_yr_class,              field_0x66b,      field_0x67d),
@@ -1749,6 +1749,11 @@ void settle_after_decision(fopAc_ac_c* actor) {
     if (fopAcM_GetName(actor) == fpcNm_E_GE_e) {
         auto* ge = static_cast<daE_GE_c*>(actor);
         if (ge->field_0xb8a <= 0) ge->field_0xb8a = 8;
+        if (ge->mCircleFlyScale <= 0) ge->mCircleFlyScale = 14;
+        if (ge->mActionMode == 3 && ge->mMode == 1) {
+            if (ge->field_0xb8a < 8 || ge->field_0xb8a > 32) ge->field_0xb8a = 32;
+            if (ge->field_0xb58 <= 0.0f) ge->field_0xb58 = 15.0f;
+        }
     }
     if (fopAcM_GetName(actor) == fpcNm_E_MM_e) {
         auto* mm = reinterpret_cast<e_mm_class*>(actor);
@@ -3199,6 +3204,16 @@ HookAction on_proc_execute_pre(ModContext*, void* args, void*, void*) {
 
     {
         auto* proc = mods::arg<base_process_class*>(args, 0);
+        if (proc != nullptr && fpcM_GetProfName(proc) == fpcNm_E_GE_e) {
+            auto* ge = reinterpret_cast<daE_GE_c*>(proc);
+            if (ge->mCircleFlyScale <= 0) ge->mCircleFlyScale = 14;
+            if (ge->mActionMode == 3 && ge->mMode == 1) {
+                if (ge->field_0xb8a < 8 || ge->field_0xb8a > 32) ge->field_0xb8a = 32;
+                if (ge->field_0xb58 <= 0.0f) ge->field_0xb58 = 15.0f;
+            } else if (ge->field_0xb8a == 0 && ge->mActionMode != 4 && ge->mActionMode != 7) {
+                ge->field_0xb8a = 8;
+            }
+        }
         daAlink_c* alink = daAlink_getAlinkActorClass();
 
         if (proc != nullptr && alink != nullptr && proc->id == fopAcM_GetID(alink)) {
