@@ -132,6 +132,17 @@
 #include "d/actor/d_a_e_zh.h"
 #include "d/actor/d_a_e_zm.h"
 #include "d/actor/d_a_e_zs.h"
+#include "d/actor/d_a_e_vt.h"
+#include "d/actor/d_a_b_tn.h"
+#include "d/actor/d_a_b_gg.h"
+#include "d/actor/d_a_b_yo.h"
+#include "d/actor/d_a_b_gm.h"
+#include "d/actor/d_a_b_dr.h"
+#include "d/actor/d_a_b_zant.h"
+#include "d/actor/d_a_b_mgn.h"
+#include "d/actor/d_a_b_gnd.h"
+#include "d/actor/d_a_b_ob.h"
+#include "d/actor/d_a_b_ds.h"
 #include "d/d_com_inf_game.h"
 
 #include "d/d_save.h"
@@ -398,9 +409,77 @@ void forget_placed_enemies_in(int room) {
 const int kSeenSlots = 4096;
 fpc_ProcID s_seenProc[kSeenSlots];
 
+bool is_synced_boss_or_miniboss(fopAc_ac_c* actor) {
+    if (actor == nullptr) return false;
+    const s16 name = fopAcM_GetName(actor);
+    const u8 p0 = static_cast<u8>(fopAcM_GetParam(actor) & 0xFFu);
+    switch (name) {
+    case 0x1B1: // Dangoro
+    case 0x1C2: // Darkhammer
+    case 0x200: // Deku Toad
+    case 0x208: // Death Sword
+    case 0x213: // Darknut
+    case 0x214: // Aeralfos
+    case 0x1D7: // Fyrus
+    case 0x0F3: // Morpheel
+    case 0x211: // Blizzeta
+    case 0x20D: // Armogohma
+    case 0x0F9: // Zant
+    case 0x1CB: // Puppet Zelda
+    case 0x216: // Dark Beast Ganon
+    case 0x20E: // Ganondorf
+        return true;
+    case 0x1E4: { // Phantom Zant (exclude magic balls arg0 >= 10)
+        if (fpcM_IsCreating(fopAcM_GetID(actor))) return p0 < 10 || p0 == 0xFF;
+        return static_cast<daE_PZ_c*>(actor)->arg0 < 10;
+    }
+    case 0x0F6: { // Stallord (only TYPE_BATTLE_1=0 and TYPE_BATTLE_2=2; exclude bullets 1,3,4)
+        if (fpcM_IsCreating(fopAcM_GetID(actor))) return p0 == 0 || p0 == 2 || p0 == 0xFF;
+        const u8 a0 = static_cast<daB_DS_c*>(actor)->arg0;
+        return a0 == 0 || a0 == 2;
+    }
+    case 0x0F7: { // Argorok (exclude fire=10 and broken armor parts=20,21)
+        if (fpcM_IsCreating(fopAcM_GetID(actor))) return p0 != 10 && p0 != 20 && p0 != 21;
+        const u8 a0 = static_cast<daB_DR_c*>(actor)->arg0;
+        return a0 != 10 && a0 != 20 && a0 != 21;
+    }
+    case 0x1BB: { // Gohma (only mType == 2 Phase 2 boss eyeball)
+        if (fpcM_IsCreating(fopAcM_GetID(actor))) return p0 == 2;
+        return static_cast<daE_GM_c*>(actor)->mType == 2;
+    }
+    default:
+        return false;
+    }
+}
+
+bool is_single_instance_boss(fopAc_ac_c* actor, uint8_t& subKey) {
+    subKey = 0;
+    if (!is_synced_boss_or_miniboss(actor)) return false;
+    const s16 name = fopAcM_GetName(actor);
+    if (name == 0x213 || name == 0x214) {
+        // Darknut and Aeralfos can appear in multiple instances in later rooms; use normal placement key.
+        return false;
+    }
+    if (name == 0x0F6) {
+        const u8 p0 = static_cast<u8>(fopAcM_GetParam(actor) & 0xFFu);
+        subKey = fpcM_IsCreating(fopAcM_GetID(actor))
+                     ? (p0 == 2 ? 2 : 0)
+                     : static_cast<uint8_t>(static_cast<daB_DS_c*>(actor)->arg0);
+    } else if (name == 0x1BB) {
+        subKey = 2;
+    }
+    return true;
+}
+
 uint32_t compute_placement_key(fopAc_ac_c* actor) {
     uint32_t h = 2166136261u;
     const int16_t name = fopAcM_GetName(actor);
+    uint8_t bossSubKey = 0;
+    if (is_single_instance_boss(actor, bossSubKey)) {
+        h = fnv(h, &name, sizeof(name));
+        h = fnv(h, &bossSubKey, sizeof(bossSubKey));
+        return h != 0 ? h : 1u;
+    }
     const uint16_t setID = actor->setID;
     if (setID != 0xFFFF) {
         h = fnv(h, &name, sizeof(name));
@@ -608,7 +687,8 @@ uint32_t placement_key(fopAc_ac_c* actor) {
 
     const BirthRecord* bornAs = find_birth(id);
     const s16 procName = fopAcM_GetName(actor);
-    const bool alwaysPlaced = procName == fpcNm_E_HP_e || procName == fpcNm_E_PO_e;
+    const bool alwaysPlaced =
+        procName == fpcNm_E_HP_e || procName == fpcNm_E_PO_e || is_synced_boss_or_miniboss(actor);
     const bool runtime = !alwaysPlaced && (bornAs != nullptr ? !bornAs->inSettle : s_settleTicks <= 0);
     const uint32_t key = runtime ? compute_sequence_key(actor) : compute_placement_key(actor);
 
@@ -643,51 +723,39 @@ struct EnemyList {
     int enemyActors;
 };
 
-bool procname_is_boss(s16 name) {
+bool is_excluded_boss_helper_or_adapter(fopAc_ac_c* actor) {
+    if (actor == nullptr) return true;
+    const s16 name = fopAcM_GetName(actor);
     switch (name) {
-
-    case 0x07D:
-    case 0x0D2:
-    case 0x0F3:
-    case 0x0F6:
-    case 0x0F7:
-    case 0x0F8:
-    case 0x0F9:
-    case 0x0FA:
-    case 0x20B:
-    case 0x20C:
-    case 0x20D:
-    case 0x20E:
-    case 0x20F:
-    case 0x210:
-    case 0x211:
-    case 0x212:
-    case 0x213:
-    case 0x214:
-    case 0x215:
-    case 0x216:
-    case 0x2F1:
-
-    case 0x1DB:
-    case 0x1DC:
-    case 0x2ED:
-
-    case 0x1B1:
-    case 0x1C2:
-    case 0x200:
-    case 0x208:
-
-    case 0x1D7:
-    case 0x1CB:
-    case 0x1E4:
+    // Forest Temple boss & miniboss handled by custom adapters in boss.cpp:
+    case 0x20B: // B_BH (Diababa tentacle)
+    case 0x20C: // B_BQ (Diababa body)
+    case 0x1DB: // E_MB (Ook helper / Deku Baba)
+    case 0x1DC: // E_MK (Ook)
+    case 0x2ED: // E_MK_BO (Ook boomerang)
+    // Boss sub-parts, limbs, and projectiles driven locally by their parent boss:
+    case 0x07D: // B_ZANTS
+    case 0x0D2: // B_OH (Morpheel tentacle)
+    case 0x0F8: // B_ZANTZ
+    case 0x0FA: // B_ZANTM
+    case 0x20F: // B_GO (Fyrus chain)
+    case 0x210: // B_OH2
+    case 0x212: // B_YOI (Blizzeta ice block)
+    case 0x215: // B_DRE (Argorok intro dragon)
+    case 0x2F1: // B_GOS
+    case 0x2E8: // E_TH_BALL (Darkhammer ball & chain item)
         return true;
+    case 0x1E4: // Phantom Zant magic balls
+    case 0x0F6: // Stallord fire bullets
+    case 0x0F7: // Argorok fire / armor pieces
+        return !is_synced_boss_or_miniboss(actor);
     default:
         return false;
     }
 }
 
 bool syncable(fopAc_ac_c* actor) {
-    if (rival_is(actor)) return false;
+    if (actor == nullptr || rival_is(actor)) return false;
 
     {
         const s16 name = fopAcM_GetName(actor);
@@ -715,24 +783,16 @@ bool syncable(fopAc_ac_c* actor) {
         }
     }
 
-    if (procname_is_boss(fopAcM_GetName(actor))) return false;
+    if (is_excluded_boss_helper_or_adapter(actor)) return false;
+    if (is_synced_boss_or_miniboss(actor)) return true;
 
     if (boss_room(fopAcM_GetRoomNo(actor))) return false;
     return (actor->actor_status & fopAcStts_BOSS_e) == 0;
 }
 
 void* mark_boss_room(void* proc, void* data) {
+    (void)proc;
     (void)data;
-    auto* actor = static_cast<fopAc_ac_c*>(proc);
-    if (actor == nullptr) return nullptr;
-    const s16 name = fopAcM_GetName(actor);
-    if (!procname_is_boss(name) && (actor->actor_status & fopAcStts_BOSS_e) == 0) return nullptr;
-
-    if (boss_is_supported_procname(name)) return nullptr;
-    const int room = fopAcM_GetRoomNo(actor);
-    if (room < 0 || room >= kRooms || s_bossRoom[room]) return nullptr;
-    s_bossRoom[room] = true;
-    coop_log::info("coop_mod: [ENEMY] room {} has boss {}, running locally", room, static_cast<int>(fopAcM_GetName(actor)));
     return nullptr;
 }
 
@@ -742,8 +802,9 @@ void* collect_enemy(void* proc, void* data) {
     if (actor == nullptr) return nullptr;
 
     const bool trackedObject = fopAcM_GetName(actor) == kProcNbomb;
+    const bool trackedBoss = is_synced_boss_or_miniboss(actor);
 
-    if (fopAcM_GetGroup(actor) != fopAc_ENEMY_e && !trackedObject) return nullptr;
+    if (fopAcM_GetGroup(actor) != fopAc_ENEMY_e && !trackedObject && !trackedBoss) return nullptr;
 
     if (fopAcM_GetName(actor) == fpcNm_NI_e) return nullptr;
 
@@ -1310,6 +1371,18 @@ ANM(0x1AF, e_ai_class,    m_modelMorf,   m_anm,     "E_AI"),
     ANM(0x1EE, e_is_class,    model_morf,    anm,       "E_IS"),
     ANM(0x1FB, e_yg_class,    mpMorf,        mAnm,      "E_YG"),
     ANM(0x304, e_bi_class,    anm_p,         anm_no,    "E_BI"),
+
+    ANM_NOID(0x208, daE_VA_c,     mpMorf,          "E_VA"),
+    ANM_NOID(0x213, daB_TN_c,     mpModelMorf2,    "B_tn"),
+    ANM(0x214,      daB_GG_c,     mpModelMorf,     mAnm,    "B_gg"),
+    ANM_NOID(0x211, daB_YO_c,     mpYetaMorf,      "B_YO"),
+    ANM(0x20D,      b_gm_class,   mpModelMorf,     mAnmID,  "B_gm"),
+    ANM(0x0F7,      daB_DR_c,     mpModelMorf,     mAnm,    "B_DR"),
+    ANM_NOID(0x0F9, daB_ZANT_c,   mpModelMorf,     "B_zan"),
+    ANM_NOID(0x216, daB_MGN_c,    mpMgnModelMorf,  "B_mgn"),
+    ANM(0x20E,      b_gnd_class,  mpModelMorf,     mAnmID,  "B_gnd"),
+    ANM(0x0F3,      b_ob_class,   mpCoreMorf,      mAnmID,  "B_oh"),
+    ANM(0x0F6,      daB_DS_c,     mpMorf,          mAnmID,  "B_DS"),
 };
 
 #undef ANM
@@ -1590,12 +1663,23 @@ const EnemyActLayout kEnemyAct[] = {
     ACT(0x01fd, daE_WS_c,                mAction,          mMode),
     ACT(0x01fe, daE_OC_c,                mActionMode,      mOcState),
     ACT(0x01ff, daE_OT_c,                mAction,          mMode),
-    ACT(0x0200, daE_DT_c,                mChestMode,       mMode),
+    ACT(0x0200, daE_DT_c,                mAction,          mMode),
     ACT(0x0201, daE_BG_c,                mActionMode,      mMoveMode),
     ACT(0x0206, daE_TT_c,                mAction,          mMode),
     ACT(0x0207, daE_DK_c,                mActionMode,      mMoveMode),
+    ACT(0x0208, daE_VA_c,                mAction,          mMode),
     ACT(0x0209, daE_WW_c,                mAction,          mActionMode),
     ACT(0x020a, daE_GI_c,                mActionMode,      mMoveMode),
+    ACT(0x020d, b_gm_class,              mAction,          mMode),
+    ACT(0x020e, b_gnd_class,             mActionMode,      mMoveMode),
+    ACT(0x0211, daB_YO_c,                mAction,          mMode),
+    ACT(0x0213, daB_TN_c,                mActionMode1,     mActionMode2),
+    ACT(0x0214, daB_GG_c,                mAction,          mMode),
+    ACT(0x0216, daB_MGN_c,               mActionMode,      mMoveMode),
+    ACT(0x00f3, b_ob_class,              mAction,          mMode),
+    ACT(0x00f6, daB_DS_c,                mAction,          mMode),
+    ACT(0x00f7, daB_DR_c,                mActionMode,      mMoveMode),
+    ACT(0x00f9, daB_ZANT_c,              mAction,          mMode),
     ACT(0x02e5, e_arrow_class,           mAction,          mMode),
     ACT(0x02e8, e_th_ball_class,         mAction,          mMode),
     ACT(0x02ed, e_mk_bo_class,           action,           mode),
@@ -1671,6 +1755,10 @@ void settle_after_decision(fopAc_ac_c* actor) {
         if (mm->action != 10) mm->field_0xb99 &= ~8;
 
         if (mm->action == 2 && mm->mode == 1) mm->mode = 0;
+    }
+    if (fopAcM_GetName(actor) == 0x1C2) {
+        auto* th = reinterpret_cast<e_th_class*>(actor);
+        if (th->mAction != 6) th->field_0x68a |= 1;
     }
 }
 
@@ -1769,7 +1857,44 @@ const EnemyStateLayout* state_layout_for(int16_t procName) {
 
 int8_t read_enemy_state(fopAc_ac_c* actor) {
     if (actor == nullptr) return kEnemyNoState;
-    const EnemyStateLayout* l = state_layout_for(fopAcM_GetName(actor));
+    const s16 name = fopAcM_GetName(actor);
+    if (name == 0x214) {
+        auto* gg = static_cast<daB_GG_c*>(actor);
+        return static_cast<int8_t>(gg->mSubAction & 0x7F);
+    }
+    if (name == 0x211) {
+        auto* yo = static_cast<daB_YO_c*>(actor);
+        return static_cast<int8_t>((yo->mModelNo & 0x7) | ((yo->mRoomType & 0x1) << 3) |
+                                   ((yo->mLastPhaseDamage & 0x7) << 4));
+    }
+    if (name == 0x213) {
+        auto* tn = static_cast<daB_TN_c*>(actor);
+        int dmgHalf = tn->field_0x6fc / 2;
+        if (dmgHalf < 0) dmgHalf = 0;
+        if (dmgHalf > 63) dmgHalf = 63;
+        return static_cast<int8_t>((dmgHalf & 0x3F) | ((tn->mActionMode1 >= 8 ? 1 : 0) << 6));
+    }
+    if (name == 0x20D) {
+        auto* gm = reinterpret_cast<b_gm_class*>(actor);
+        return static_cast<int8_t>(gm->mHitCount & 0x7F);
+    }
+    if (name == 0x1BB && static_cast<daE_GM_c*>(actor)->mType == 2) {
+        auto* egm = static_cast<daE_GM_c*>(actor);
+        return static_cast<int8_t>((egm->field_0xa74 & 0xF) | ((egm->field_0xa68 ? 1 : 0) << 4));
+    }
+    if (name == 0x0F9) {
+        auto* zant = static_cast<daB_ZANT_c*>(actor);
+        return static_cast<int8_t>((zant->mFightPhase & 0xF) | ((zant->mFightCycle & 0x7) << 4));
+    }
+    if (name == 0x200) {
+        auto* dt = static_cast<daE_DT_c*>(actor);
+        return static_cast<int8_t>(dt->mChestMode & 0x7F);
+    }
+    if (name == 0x0F6) {
+        auto* ds = static_cast<daB_DS_c*>(actor);
+        if (ds->arg0 == 0) return static_cast<int8_t>(ds->mBackboneLevel & 0x7);
+    }
+    const EnemyStateLayout* l = state_layout_for(name);
     if (l == nullptr) return kEnemyNoState;
     const int32_t v = read_sized(actor, l->offset, l->size);
 
@@ -1779,7 +1904,68 @@ int8_t read_enemy_state(fopAc_ac_c* actor) {
 
 void write_enemy_state(fopAc_ac_c* actor, int8_t value) {
     if (actor == nullptr || value == kEnemyNoState) return;
-    const EnemyStateLayout* l = state_layout_for(fopAcM_GetName(actor));
+    const s16 name = fopAcM_GetName(actor);
+    if (name == 0x214) {
+        auto* gg = static_cast<daB_GG_c*>(actor);
+        gg->mSubAction = static_cast<u8>(value & 0x7F);
+        return;
+    }
+    if (name == 0x211) {
+        auto* yo = static_cast<daB_YO_c*>(actor);
+        const u8 wantRoomType = static_cast<u8>((value >> 3) & 0x1);
+        const s8 wantLastDmg = static_cast<s8>((value >> 4) & 0x7);
+        if (wantLastDmg < yo->mLastPhaseDamage) yo->mLastPhaseDamage = wantLastDmg;
+        if (wantRoomType == 1 && yo->mRoomType == 0 && yo->mAction != 2) {
+            yo->mAction = 2;
+            yo->mMode = 0;
+        }
+        return;
+    }
+    if (name == 0x213) {
+        auto* tn = static_cast<daB_TN_c*>(actor);
+        const int wantDmg = (value & 0x3F) * 2;
+        const bool wantBroken = (value & 0x40) != 0;
+        if (tn->mActionMode1 < 7) {
+            if (wantDmg > tn->field_0x6fc) tn->field_0x6fc = static_cast<s16>(wantDmg);
+            if (wantBroken) {
+                tn->mActionMode1 = 7;
+                tn->mActionMode2 = 0;
+            }
+        }
+        return;
+    }
+    if (name == 0x20D) {
+        auto* gm = reinterpret_cast<b_gm_class*>(actor);
+        if (value > gm->mHitCount) gm->mHitCount = value;
+        return;
+    }
+    if (name == 0x1BB && static_cast<daE_GM_c*>(actor)->mType == 2) {
+        auto* egm = static_cast<daE_GM_c*>(actor);
+        const s8 hitsLeft = static_cast<s8>(value & 0xF);
+        if (hitsLeft < egm->field_0xa74) egm->field_0xa74 = hitsLeft;
+        if ((value & 0x10) != 0) egm->field_0xa68 = 1;
+        return;
+    }
+    if (name == 0x0F9) {
+        auto* zant = static_cast<daB_ZANT_c*>(actor);
+        zant->mFightPhase = static_cast<u8>(value & 0xF);
+        zant->mFightCycle = static_cast<u8>((value >> 4) & 0x7);
+        return;
+    }
+    if (name == 0x200) {
+        auto* dt = static_cast<daE_DT_c*>(actor);
+        dt->mChestMode = static_cast<s32>(value & 0x7F);
+        return;
+    }
+    if (name == 0x0F6) {
+        auto* ds = static_cast<daB_DS_c*>(actor);
+        if (ds->arg0 == 0 && value > ds->mBackboneLevel && ds->mAction != 3) {
+            ds->mAction = 3;
+            ds->mMode = 0;
+        }
+        return;
+    }
+    const EnemyStateLayout* l = state_layout_for(name);
     if (l == nullptr) return;
     const int32_t ours = read_sized(actor, l->offset, l->size);
     if (l->mode == kStateLatch) {
@@ -1867,6 +2053,9 @@ const EnemyTmrLayout kEnemyTmr[] = {
 
     { (int16_t)0x0304, (uint16_t)offsetof(e_bi_class, timer), (uint8_t)5 },
     TMR(0x1BF, e_st_class,            mTimers),
+    TMR(0x00f3, b_ob_class,           mTimers),
+    TMR(0x020d, b_gm_class,           mTimers),
+    TMR(0x0214, daB_GG_c,             mTimers),
 };
 #undef TMR
 
@@ -1987,6 +2176,300 @@ void send_gone(int8_t room, uint32_t key) {
         static_cast<int>(room), key);
 }
 
+bool is_boss_dying_state(fopAc_ac_c* actor, int16_t act, int16_t mode, int8_t extra) {
+    if (!is_synced_boss_or_miniboss(actor)) return false;
+    const s16 name = fopAcM_GetName(actor);
+    switch (name) {
+    case 0x1B1: return act == 10;
+    case 0x1C2: return act == 6;
+    case 0x200: return act == 9;
+    case 0x208: return act == 11;
+    case 0x213: return act == 13;
+    case 0x214: return act == 4 && extra >= 10;
+    case 0x1E4: return act == 5 && mode >= 10;
+    case 0x1D7: return act == 8;
+    case 0x0F3: return act == 9;
+    case 0x0F6: {
+        const u8 a0 = static_cast<daB_DS_c*>(actor)->arg0;
+        return (a0 == 0 && act == 3 && mode >= 10) || (a0 == 2 && act == 5);
+    }
+    case 0x211: return (act == 1 && mode >= 15) || act == 7;
+    case 0x20D: return act == 10;
+    case 0x1BB: return extra != kEnemyNoState && (extra & 0x10) != 0;
+    case 0x0F7: return act == 14;
+    case 0x0F9: return act == 17;
+    case 0x1CB: return act == 10;
+    case 0x216: return act == 10;
+    case 0x20E: return act == 26;
+    default: return false;
+    }
+}
+
+bool is_boss_dying_local(fopAc_ac_c* actor) {
+    if (!is_synced_boss_or_miniboss(actor)) return false;
+    int16_t act = kEnemyNoAction;
+    int16_t mode = 0;
+    read_enemy_decision(actor, act, mode);
+    const int8_t extra = read_enemy_state(actor);
+    return is_boss_dying_state(actor, act, mode, extra);
+}
+
+bool is_boss_in_local_demo(fopAc_ac_c* actor) {
+    if (!is_synced_boss_or_miniboss(actor)) return false;
+    if (actor->eventInfo.checkCommandDemoAccrpt() != 0 || dComIfGp_event_runCheck() != 0) {
+        return true;
+    }
+    const s16 name = fopAcM_GetName(actor);
+    switch (name) {
+    case 0x1B1: {
+        auto* gob = reinterpret_cast<e_gob_class*>(actor);
+        return gob->mDemoCamMode != 0 || gob->mAction <= 1;
+    }
+    case 0x1C2: {
+        auto* th = reinterpret_cast<e_th_class*>(actor);
+        return th->mDemoCamMode != 0;
+    }
+    case 0x200: {
+        auto* dt = static_cast<daE_DT_c*>(actor);
+        return dt->mAction == 10 || dt->mDemoMode != 0;
+    }
+    case 0x208: {
+        auto* va = static_cast<daE_VA_c*>(actor);
+        return va->mAction <= 1;
+    }
+    case 0x213: {
+        auto* tn = static_cast<daB_TN_c*>(actor);
+        return tn->mActionMode1 <= 1 || tn->mActionMode1 == 7;
+    }
+    case 0x214: {
+        auto* gg = static_cast<daB_GG_c*>(actor);
+        return gg->mAction == 3;
+    }
+    case 0x1E4: {
+        auto* pz = static_cast<daE_PZ_c*>(actor);
+        return pz->mActionMode == 1;
+    }
+    case 0x1D7: {
+        auto* fm = reinterpret_cast<e_fm_class*>(actor);
+        return fm->mDemoCamMode != 0 || fm->mAction == 10;
+    }
+    case 0x0F3: {
+        auto* ob = reinterpret_cast<b_ob_class*>(actor);
+        return ob->mDemoAction != 0;
+    }
+    case 0x0F6: {
+        auto* ds = static_cast<daB_DS_c*>(actor);
+        if (ds->arg0 == 0) return ds->mAction == 1 || ds->mAction == 3;
+        if (ds->arg0 == 2) return ds->mAction == 0 || ds->mAction == 5;
+        return false;
+    }
+    case 0x211: {
+        auto* yo = static_cast<daB_YO_c*>(actor);
+        return yo->mAction == 0 || yo->mAction == 2 || yo->mAction == 7 ||
+               (yo->mAction == 1 && yo->mMode >= 10);
+    }
+    case 0x20D: {
+        auto* gm = reinterpret_cast<b_gm_class*>(actor);
+        return gm->mDemoMode != 0;
+    }
+    case 0x0F7: {
+        auto* dr = static_cast<daB_DR_c*>(actor);
+        return dr->arg0 >= 0xFE || dr->mActionMode == 0 || dr->mActionMode == 10 ||
+               (dr->mActionMode == 4 && dr->mMoveMode >= 20);
+    }
+    case 0x0F9: {
+        auto* zant = static_cast<daB_ZANT_c*>(actor);
+        return zant->mAction == 4 || zant->mAction == 11 || zant->mAction == 17;
+    }
+    case 0x1CB: {
+        auto* hz = reinterpret_cast<e_hzelda_class*>(actor);
+        return hz->mDemoMode != 0;
+    }
+    case 0x216: {
+        auto* mgn = static_cast<daB_MGN_c*>(actor);
+        return mgn->mActionMode == 0 || mgn->mActionMode == 10;
+    }
+    case 0x20E: {
+        auto* gnd = reinterpret_cast<b_gnd_class*>(actor);
+        return gnd->mDemoCamMode != 0;
+    }
+    default:
+        return false;
+    }
+}
+
+bool is_remote_boss_demo_action(fopAc_ac_c* actor, int16_t act, int16_t mode) {
+    if (!is_synced_boss_or_miniboss(actor) || act == kEnemyNoAction) return false;
+    const s16 name = fopAcM_GetName(actor);
+    switch (name) {
+    case 0x1B1: return act <= 1;
+    case 0x200: return act == 10;
+    case 0x208: return act <= 1;
+    case 0x213: return act <= 1 || act == 7;
+    case 0x214: return act == 3;
+    case 0x1E4: return act == 1;
+    case 0x1D7: return act == 10;
+    case 0x0F6: {
+        const u8 a0 = static_cast<daB_DS_c*>(actor)->arg0;
+        if (a0 == 0) return act == 1 || act == 3;
+        if (a0 == 2) return act == 0;
+        return false;
+    }
+    case 0x211: return act == 0 || act == 2 || (act == 1 && mode >= 10 && mode < 15);
+    case 0x0F7: return act == 0 || act == 10 || (act == 4 && mode >= 20);
+    case 0x0F9: return act == 4 || act == 11;
+    case 0x216: return act == 0;
+    default: return false;
+    }
+}
+
+void trigger_boss_death(fopAc_ac_c* actor) {
+    if (actor == nullptr || !is_synced_boss_or_miniboss(actor) || is_boss_dying_local(actor)) return;
+    const s16 name = fopAcM_GetName(actor);
+    coop_log::info("coop_mod: [BOSS] triggering local death transition for boss {:#x}",
+                   static_cast<unsigned>(name));
+    switch (name) {
+    case 0x1B1: {
+        auto* gob = reinterpret_cast<e_gob_class*>(actor);
+        actor->health = 0;
+        gob->mAction = 10;
+        gob->mMode = 0;
+        break;
+    }
+    case 0x1C2: {
+        auto* th = reinterpret_cast<e_th_class*>(actor);
+        actor->health = 0;
+        th->mAction = 6;
+        th->mMode = 0;
+        break;
+    }
+    case 0x200: {
+        auto* dt = static_cast<daE_DT_c*>(actor);
+        actor->health = 0;
+        dt->mAction = 9;
+        dt->mMode = 0;
+        break;
+    }
+    case 0x208: {
+        auto* va = static_cast<daE_VA_c*>(actor);
+        actor->health = 0;
+        va->mAction = 11;
+        va->mMode = 0;
+        fopAcM_OffStatus(actor, fopAcStts_NODRAW_e);
+        break;
+    }
+    case 0x213: {
+        auto* tn = static_cast<daB_TN_c*>(actor);
+        actor->health = 0;
+        tn->mActionMode1 = 13;
+        tn->mActionMode2 = 0;
+        break;
+    }
+    case 0x214: {
+        auto* gg = static_cast<daB_GG_c*>(actor);
+        actor->health = 0;
+        gg->mAction = 4;
+        gg->mSubAction = 10;
+        gg->mMode = 0;
+        break;
+    }
+    case 0x1E4: {
+        auto* pz = static_cast<daE_PZ_c*>(actor);
+        actor->health = 0;
+        pz->mActionMode = 5;
+        pz->mMoveMode = 10;
+        break;
+    }
+    case 0x1D7: {
+        auto* fm = reinterpret_cast<e_fm_class*>(actor);
+        actor->health = 0;
+        fm->mAction = 8;
+        fm->mMode = 0;
+        break;
+    }
+    case 0x0F3: {
+        auto* ob = reinterpret_cast<b_ob_class*>(actor);
+        actor->health = 0;
+        ob->mAction = 9;
+        ob->mMode = 0;
+        break;
+    }
+    case 0x0F6: {
+        auto* ds = static_cast<daB_DS_c*>(actor);
+        if (ds->arg0 == 0) {
+            ds->mBackboneLevel = 2;
+            ds->mAction = 3;
+            ds->mMode = 0;
+        } else if (ds->arg0 == 2) {
+            actor->health = 0;
+            ds->mAction = 5;
+            ds->mMode = 0;
+        }
+        break;
+    }
+    case 0x211: {
+        auto* yo = static_cast<daB_YO_c*>(actor);
+        actor->health = 0;
+        yo->mLastPhaseDamage = 0;
+        yo->mAction = 1;
+        yo->mMode = 15;
+        break;
+    }
+    case 0x20D: {
+        auto* gm = reinterpret_cast<b_gm_class*>(actor);
+        actor->health = 0;
+        gm->mHitCount = 3;
+        gm->mAction = 10;
+        gm->mMode = 0;
+        break;
+    }
+    case 0x1BB: {
+        auto* egm = static_cast<daE_GM_c*>(actor);
+        actor->health = 0;
+        egm->field_0xa74 = 0;
+        egm->field_0xa68 = 1;
+        break;
+    }
+    case 0x0F7: {
+        auto* dr = static_cast<daB_DR_c*>(actor);
+        actor->health = 0;
+        dr->mActionMode = 14;
+        dr->mMoveMode = 0;
+        break;
+    }
+    case 0x0F9: {
+        auto* zant = static_cast<daB_ZANT_c*>(actor);
+        actor->health = 0;
+        zant->mAction = 17;
+        zant->mMode = 0;
+        break;
+    }
+    case 0x1CB: {
+        auto* hz = reinterpret_cast<e_hzelda_class*>(actor);
+        actor->health = 0;
+        hz->mAction = 10;
+        hz->mMode = 0;
+        break;
+    }
+    case 0x216: {
+        auto* mgn = static_cast<daB_MGN_c*>(actor);
+        actor->health = 0;
+        mgn->mActionMode = 10;
+        mgn->mMoveMode = 0;
+        break;
+    }
+    case 0x20E: {
+        auto* gnd = reinterpret_cast<b_gnd_class*>(actor);
+        actor->health = 0;
+        gnd->mActionMode = 26;
+        gnd->mMoveMode = 0;
+        break;
+    }
+    default:
+        break;
+    }
+}
+
 void sweep(EnemyList& list, bool host) {
     for (int i = 0; i < kMaxTracked; ++i) s_tracked[i].seen = false;
 
@@ -2054,7 +2537,8 @@ void sweep(EnemyList& list, bool host) {
 
         (void)fresh;
 
-        if ((t->health > 0 && health <= 0 && !is_downed_alive(actor)) || is_poe_soul_ripped(actor)) {
+        if ((t->health > 0 && health <= 0 && !is_downed_alive(actor)) ||
+            is_poe_soul_ripped(actor) || is_boss_dying_local(actor)) {
             t->killed = true;
         }
         t->health = health;
@@ -2117,6 +2601,27 @@ void apply_remote(EnemyList& list) {
         }
         ++s_diagMatched;
 
+        const bool isBoss = is_synced_boss_or_miniboss(actor);
+        if (isBoss) {
+            if (is_boss_dying_local(actor)) {
+                if (r.gone) r = Remote{};
+                continue;
+            }
+            if (is_boss_in_local_demo(actor)) {
+                continue;
+            }
+            if (r.gone || is_boss_dying_state(actor, r.action, r.mode, r.extraState)) {
+                trigger_boss_death(actor);
+                if (Tracked* t = find_tracked(r.room, r.key)) {
+                    t->health = 0;
+                    t->killed = true;
+                    t->goneSent = true;
+                }
+                if (r.gone) r = Remote{};
+                continue;
+            }
+        }
+
         if (r.gone) {
             if (actor->health > 0) actor->health = 0;
             const s16 goneName = fopAcM_GetName(actor);
@@ -2148,6 +2653,11 @@ void apply_remote(EnemyList& list) {
             r = Remote{};
 
             if (ot != nullptr) ot->decisionKnown = false;
+            continue;
+        }
+
+        if (isBoss && is_remote_boss_demo_action(actor, r.action, r.mode)) {
+            write_enemy_state(actor, r.extraState);
             continue;
         }
 
@@ -2257,7 +2767,7 @@ void owner_finish_kills(EnemyList& list) {
         if (!is_owned_locally(t.room, t.key)) continue;
         fopAc_ac_c* actor = find_local(list, t.room, t.key);
         if (actor != nullptr && actor->health > 0) continue;
-        if (is_downed_alive(actor)) continue;
+        if (is_downed_alive(actor) || is_synced_boss_or_miniboss(actor)) continue;
         if (actor != nullptr && deleteCount < kMaxTracked) {
             t.deleteAsked = true;
             toDelete[deleteCount++] = actor;
@@ -2631,7 +3141,11 @@ void on_switch_post(ModContext*, void* args, void*, void*) {
     }
     fopAc_ac_c* actor = fopAcM_SearchByID(s_execStack[s_execDepth - 1]);
 
-    if (actor == nullptr || fopAcM_GetGroup(actor) != fopAc_ENEMY_e || !syncable(actor)) return;
+    if (actor == nullptr ||
+        (fopAcM_GetGroup(actor) != fopAc_ENEMY_e && !is_synced_boss_or_miniboss(actor)) ||
+        !syncable(actor)) {
+        return;
+    }
     const s16 name = fopAcM_GetName(actor);
 
     if (name == fpcNm_E_YMB_e && mods::arg<int>(args, 0) == 5) return;
@@ -2699,6 +3213,7 @@ HookAction on_proc_execute_pre(ModContext*, void* args, void*, void*) {
             fopAc_ac_c* actor = fopAcM_SearchByID(proc->id);
             if (actor != nullptr &&
                 (fopAcM_GetGroup(actor) == fopAc_ENEMY_e ||
+                    is_synced_boss_or_miniboss(actor) ||
                     fopAcM_GetName(actor) == fpcNm_E_HP_e ||
                     fopAcM_GetName(actor) == fpcNm_E_PO_e)) {
                 const int r = fopAcM_GetRoomNo(actor);
@@ -2721,6 +3236,7 @@ HookAction on_proc_execute_pre(ModContext*, void* args, void*, void*) {
             fopAc_ac_c* actor = fopAcM_SearchByID(proc->id);
             if (actor != nullptr &&
                 (fopAcM_GetGroup(actor) == fopAc_ENEMY_e ||
+                    is_synced_boss_or_miniboss(actor) ||
                     fopAcM_GetName(actor) == fpcNm_E_HP_e ||
                     fopAcM_GetName(actor) == fpcNm_E_PO_e)) {
                 placement_key(actor);
@@ -2969,13 +3485,40 @@ void inject_pending_hits(EnemyList& list) {
 
         int landed = 0;
         dCcD_GObjInf* firstTg = nullptr;
+        cXyz where(msg.at[0], msg.at[1], msg.at[2]);
+        cCcD_Obj* bestObj = nullptr;
+        dCcD_GObjInf* bestInf = nullptr;
+        int bestTier = -1;
+        f32 bestDist2 = 1.0e30f;
+
         for_each_tg_collider(actor, tgCount, [&](cCcD_Obj* obj, dCcD_GObjInf* inf) {
+            const bool typeMatch = (obj->GetTgType() & msg.atType) != 0;
+            const bool isShield = inf->ChkTgShield() != 0 &&
+                                  (msg.atType & AT_TYPE_SHIELD_ATTACK) == 0;
+            const int tier = (typeMatch ? 2 : 0) + (isShield ? 0 : 1);
+            cXyz center = actor->current.pos;
+            if (cCcD_ShapeAttr* shape = obj->GetShapeAttr()) {
+                center = shape->GetCoCP();
+            }
+            const f32 dx = center.x - where.x;
+            const f32 dy = center.y - where.y;
+            const f32 dz = center.z - where.z;
+            const f32 dist2 = dx * dx + dy * dy + dz * dz;
+            if (tier > bestTier || (tier == bestTier && dist2 < bestDist2)) {
+                bestTier = tier;
+                bestDist2 = dist2;
+                bestObj = obj;
+                bestInf = inf;
+            }
+            return false;
+        });
+
+        auto apply_to_tg = [&](cCcD_Obj* obj, dCcD_GObjInf* inf) {
             if (firstTg == nullptr) firstTg = inf;
             inf->SetTgHit(&blow);
 
             inf->OnTgHitNoActor();
             TgHitAttacker::set(inf, stand_in);
-            cXyz where(msg.at[0], msg.at[1], msg.at[2]);
             inf->SetTgHitPos(where);
             cXyz away(actor->current.pos.x - msg.from[0], 0.0f, actor->current.pos.z - msg.from[2]);
             const f32 len = std::sqrt(away.x * away.x + away.z * away.z);
@@ -2990,8 +3533,16 @@ void inject_pending_hits(EnemyList& list) {
             cCcD_Stts* stts = obj->GetStts();
             if (stts != nullptr) stts->PlusDmg(msg.atp);
             ++landed;
-            return false;
-        });
+        };
+
+        if (is_synced_boss_or_miniboss(actor) && bestObj != nullptr && bestInf != nullptr) {
+            apply_to_tg(bestObj, bestInf);
+        } else {
+            for_each_tg_collider(actor, tgCount, [&](cCcD_Obj* obj, dCcD_GObjInf* inf) {
+                apply_to_tg(obj, inf);
+                return false;
+            });
+        }
 
         if (landed > 0) {
             ++s_hitsApplied;
