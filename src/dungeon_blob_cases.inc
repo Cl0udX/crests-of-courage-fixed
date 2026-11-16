@@ -26,15 +26,12 @@
         return 2;
     case fpcNm_Obj_Lv8Lift_e:
         out[0] = {offsetof(daL8Lift_c, field_0x5c4), offsetof(daL8Lift_c, mPathID)};
-        out[1] = {offsetof(daL8Lift_c, mPathDirection), offsetof(daL8Lift_c, mAcchCir)};
-        out[2] = {offsetof(daL8Lift_c, field_0x804), offsetof(daL8Lift_c, mLightSet)};
-        out[3] = {offsetof(daL8Lift_c, field_0x80e), offsetof(daL8Lift_c, mLight)};
-        return 4;
+        out[1] = {offsetof(daL8Lift_c, mPathDirection), offsetof(daL8Lift_c, mSwbit)};
+        return 2;
     case fpcNm_Obj_Lv8OptiLift_e:
         out[0] = {offsetof(daOptiLift_c, mSwBit), offsetof(daOptiLift_c, mPathID)};
-        out[1] = {offsetof(daOptiLift_c, mPathDirection), offsetof(daOptiLift_c, mLight)};
-        out[2] = {offsetof(daOptiLift_c, mNoRideOffSwTimer), offsetof(daOptiLift_c, field_0x616) + sizeof(daOptiLift_c::field_0x616)};
-        return 3;
+        out[1] = {offsetof(daOptiLift_c, mPathDirection), offsetof(daOptiLift_c, mIsSwitch)};
+        return 2;
     case fpcNm_Obj_Elevator_e:
         out[0] = {offsetof(daObjDmElevator_c, field_0x5D8), offsetof(daObjDmElevator_c, mpBgW)};
         out[1] = {offsetof(daObjDmElevator_c, mMtx), offsetof(daObjDmElevator_c, field_0x640) + sizeof(daObjDmElevator_c::field_0x640)};
@@ -113,9 +110,6 @@
         out[0] = {offsetof(daObjLv4PRwall_c, mBgMtx2), offsetof(daObjLv4PRwall_c, mpModel)};
         out[1] = {offsetof(daObjLv4PRwall_c, field_0x60c), offsetof(daObjLv4PRwall_c, field_0x629) + sizeof(daObjLv4PRwall_c::field_0x629)};
         return 2;
-    case fpcNm_Obj_Lv4SlideWall_e:
-        out[0] = {offsetof(daSldWall_c, mMode), offsetof(daSldWall_c, field_0x5b0) + sizeof(daSldWall_c::field_0x5b0)};
-        return 1;
     case fpcNm_Obj_RotStair_e:
         out[0] = {offsetof(daObjRotStair_c, mWaterModelOn), offsetof(daObjRotStair_c, mWaterBgw)};
         out[1] = {offsetof(daObjRotStair_c, field_0x5c4), offsetof(daObjRotStair_c, mEventId)};
@@ -139,12 +133,6 @@
         return 2;
     case fpcNm_Obj_WoodPendulum_e:
         out[0] = {offsetof(daObjWPndlm_c, field_0x958), offsetof(daObjWPndlm_c, field_0x95c) + sizeof(daObjWPndlm_c::field_0x95c)};
-        return 1;
-    case fpcNm_Obj_Lv8KekkaiTrap_e:
-        out[0] = {offsetof(daKekaiTrap_c, mIsSwitch), offsetof(daKekaiTrap_c, mTimer) + sizeof(daKekaiTrap_c::mTimer)};
-        return 1;
-    case fpcNm_Obj_Lv8UdFloor_e:
-        out[0] = {offsetof(daUdFloor_c, mMode), offsetof(daUdFloor_c, field_0x5c5) + sizeof(daUdFloor_c::field_0x5c5)};
         return 1;
     case fpcNm_Obj_SwSpinner_e:
         out[0] = {offsetof(daObjSwSpinner_c, mMtx), offsetof(daObjSwSpinner_c, mCount) + sizeof(daObjSwSpinner_c::mCount)};

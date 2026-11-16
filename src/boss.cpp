@@ -57,7 +57,7 @@ bool in_gameplay() {
 }
 
 bool boss_sync_on() {
-    return coop_net_connected() && coop_session(kSessBosses, cfg_bool(s_enableVar, false)) &&
+    return coop_net_connected() && coop_session(kSessBosses, cfg_bool(s_enableVar, true)) &&
            in_gameplay() && peer_shares_stage();
 }
 
@@ -1712,7 +1712,7 @@ void boss_register_vars() {
     ConfigVarDesc desc = CONFIG_VAR_DESC_INIT;
     desc.name = "sync_boss_diababa";
     desc.type = CONFIG_VAR_BOOL;
-    desc.default_bool = false;
+    desc.default_bool = true;
     if (svc_config->register_var(mod_ctx, &desc, &s_enableVar) != MOD_OK) s_enableVar = 0;
 
     ConfigVarDesc wait = CONFIG_VAR_DESC_INIT;
@@ -2119,7 +2119,7 @@ void boss_update() {
                         "proc={:#x} event={} ready={} latched={} roomTicks={}",
             coop_net_local_id(), coop_net_is_host() ? 1 : 0, list.count, cached,
             boss_sync_on() ? 1 : 0, peer_shares_stage() ? 1 : 0, in_gameplay() ? 1 : 0,
-            coop_session(kSessBosses, cfg_bool(s_enableVar, false)) ? 1 : 0, s_fightOver ? 1 : 0,
+            coop_session(kSessBosses, cfg_bool(s_enableVar, true)) ? 1 : 0, s_fightOver ? 1 : 0,
             locAct, locDemo, remAct, remDemo,
 
             daAlink_getAlinkActorClass() != nullptr
@@ -2201,7 +2201,7 @@ void boss_on_message(uint8_t type, const uint8_t* payload, size_t size, uint8_t 
     if (type == kMsgBossStem) {
 
         if (is_fight_authority() || from != s_fightOwner || size < sizeof(MsgBossStem)) return;
-        if (!coop_session(kSessBosses, cfg_bool(s_enableVar, false)) || !in_gameplay()) return;
+        if (!coop_session(kSessBosses, cfg_bool(s_enableVar, true)) || !in_gameplay()) return;
         MsgBossStem m;
         std::memcpy(&m, payload, sizeof(m));
         cache_stem(m);
@@ -2210,7 +2210,7 @@ void boss_on_message(uint8_t type, const uint8_t* payload, size_t size, uint8_t 
     if (type == kMsgBossHit) {
 
         if (!is_fight_authority() || size < sizeof(MsgBossHit)) return;
-        if (!coop_session(kSessBosses, cfg_bool(s_enableVar, false)) || !in_gameplay()) return;
+        if (!coop_session(kSessBosses, cfg_bool(s_enableVar, true)) || !in_gameplay()) return;
         MsgBossHit msg;
         std::memcpy(&msg, payload, sizeof(msg));
         apply_remote_hit(msg);
@@ -2218,7 +2218,7 @@ void boss_on_message(uint8_t type, const uint8_t* payload, size_t size, uint8_t 
     }
     if (type != kMsgBossState) return;
     if (is_fight_authority() || from != s_fightOwner) return;
-    if (!coop_session(kSessBosses, cfg_bool(s_enableVar, false)) || !in_gameplay()) return;
+    if (!coop_session(kSessBosses, cfg_bool(s_enableVar, true)) || !in_gameplay()) return;
     if (size < 1) return;
     const int count = payload[0];
     if (size < 1 + count * sizeof(MsgBossActor)) return;

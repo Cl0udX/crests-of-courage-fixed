@@ -225,7 +225,7 @@ void* collect_local_switch(void* proc, void*) {
         const int top = param & 0xFF;
         const int count = (param >> 16) & 0xFF;
         for (int i = 0; i < count && top + i < 0xFF; ++i) add_local_switch(room, top + i);
-    } else if (name == fpcNm_Tag_Spinner_e) {
+    } else if (name == fpcNm_Tag_Spinner_e || name == fpcNm_Obj_SwSpinner_e) {
         if ((param & 0xFF) != 0xFF) add_local_switch(room, param & 0xFF);
     } else if (name == fpcNm_Obj_Swpropeller_e) {
 

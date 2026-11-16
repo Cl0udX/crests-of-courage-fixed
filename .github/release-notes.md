@@ -49,3 +49,4 @@ this build:
 - fixed loaded poes duplicating when caught at the same time
 - fixed dungeon bosses and minibosses not syncing or softlocking late joiners during cutscenes
 - fixed a divide-by-zero crash when syncing guay (crow) dive attacks
+- fixed palace of twilight platforms, spinner switches, wind propellers, water levels, and boss shutter transitions desyncing between players

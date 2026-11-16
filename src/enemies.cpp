@@ -3959,6 +3959,59 @@ bool apply_object_blob(fopAc_ac_c* actor, const uint8_t* in, size_t len) {
         std::memcpy(reinterpret_cast<uint8_t*>(actor) + runs[i].begin, in + at, n);
         at += n;
     }
+    const s16 name = fopAcM_GetName(actor);
+    if (name == fpcNm_Obj_Lv8OptiLift_e) {
+        auto* lift = static_cast<daOptiLift_c*>(actor);
+        lift->mNoRideOffSwTimer = 0;
+        lift->mPrevPlayerRide = lift->mPlayerRide;
+        if (lift->mMode == daOptiLift_c::MODE_ACC_e ||
+            lift->mMode == daOptiLift_c::MODE_MOVE_e ||
+            lift->mMode == daOptiLift_c::MODE_BRK_e ||
+            lift->mMode == daOptiLift_c::MODE_MOVE_INIT_e ||
+            lift->mMode == daOptiLift_c::MODE_MOVE_WAIT_e) {
+            lift->mIsSwitch = 1;
+            lift->field_0x616 = 0;
+            if (lift->mpBgW != nullptr && !lift->mpBgW->ChkUsed()) {
+                dComIfG_Bgsp().Regist(lift->mpBgW, lift);
+            }
+            if (lift->mMode != daOptiLift_c::MODE_MOVE_INIT_e) {
+                lift->mBtk.setFrame(lift->mBtk.getEndFrame() - 1.0f);
+            }
+        } else if (lift->mMode == daOptiLift_c::MODE_WAIT_e) {
+            if (lift->mpBgW != nullptr && lift->mpBgW->ChkUsed()) {
+                dComIfG_Bgsp().Release(lift->mpBgW);
+            }
+        }
+    } else if (name == fpcNm_Obj_Lv8Lift_e) {
+        auto* lift = static_cast<daL8Lift_c*>(actor);
+        lift->mNoRideOffSwTimer = 0;
+        lift->mPrevPlayerRide = lift->mPlayerRide;
+        if (lift->mSwbit != 0xFF) {
+            const bool active = lift->mMode < daL8Lift_c::MODE_MOVE_WAIT_e ||
+                                (lift->mMode == daL8Lift_c::MODE_MOVE_WAIT_e &&
+                                 fopAcM_isSwitch(lift, lift->getSw()));
+            if (active) {
+                lift->mIsSwitch = 1;
+                lift->field_0x808 = 1;
+                if (lift->mpBgW != nullptr && !lift->mpBgW->ChkUsed()) {
+                    dComIfG_Bgsp().Regist(lift->mpBgW, lift);
+                }
+                if (lift->mMode != daL8Lift_c::MODE_ON_ANM_e) {
+                    lift->mBtk.setFrame(lift->mBtk.getEndFrame() - 1.0f);
+                }
+            }
+        }
+    } else if (name == fpcNm_Obj_Lv3Water_e) {
+        auto* w = static_cast<daLv3Water_c*>(actor);
+        if (w->mSwStatePostEvent && w->mpBgW != nullptr && !w->mpBgW->ChkUsed()) {
+            dComIfG_Bgsp().Regist(w->mpBgW, w);
+        }
+    } else if (name == fpcNm_Obj_Swpropeller_e) {
+        auto* pr = static_cast<daObjSwPr_c*>(actor);
+        if (pr->mSwOffDelayTimer != 0 || pr->field_0x834 >= 20) {
+            fopAcM_onSwitch(pr, pr->getSwbit());
+        }
+    }
     return true;
 }
 
@@ -4113,11 +4166,25 @@ bool is_autonomous(fopAc_ac_c* actor) {
 bool is_local_mechanism(fopAc_ac_c* actor, int8_t room) {
     if (coop_player_paused(coop_net_local_id())) return false;
 
-    if (!is_autonomous(actor)) return nearest_to(actor->home.pos);
+    const s16 name = fopAcM_GetName(actor);
+    if (name == fpcNm_Obj_Lv8OptiLift_e && static_cast<daOptiLift_c*>(actor)->mPlayerRide != 0) {
+        return true;
+    }
+    if (name == fpcNm_Obj_Lv8Lift_e && static_cast<daL8Lift_c*>(actor)->mPlayerRide != 0) {
+        return true;
+    }
+    if (name == fpcNm_Obj_Swpropeller_e && static_cast<daObjSwPr_c*>(actor)->mRotateSpeed != 0) {
+        return true;
+    }
+    if (name == fpcNm_Obj_SwSpinner_e && static_cast<daObjSwSpinner_c*>(actor)->mSpinnerIn) {
+        return true;
+    }
+
+    if (!is_autonomous(actor)) return nearest_to(actor->current.pos);
     if (room >= 0 && room < kRooms && s_rooms.owner[room] != kRoomOwnerNone) {
         return s_rooms.owner[room] == local_owner_id();
     }
-    return nearest_to(actor->home.pos);
+    return nearest_to(actor->current.pos);
 }
 
 const int kPushQuietTicks = 24;
@@ -4581,18 +4648,26 @@ void apply_pending_moves() {
         const MsgObjectMove msg = s_pendingMoves[i].msg;
         s_pendingMoves[i] = PendingMove{};
 
+        if (msg.room < 0 || !dComIfGp_roomControl_checkRoomDisp(msg.room)) continue;
+
         fopAc_ac_c* actor = find_local_breakable(list, msg.room, msg.key);
         if (actor == nullptr) actor = find_by_placement(list, msg);
         if (actor == nullptr) continue;
 
+        const s16 name = fopAcM_GetName(actor);
         if (is_door(actor)) continue;
-        if (fopAcM_GetName(actor) == fpcNm_Obj_RotBridge_e) continue;
+        if (name == fpcNm_Obj_RotBridge_e) continue;
 
         if (fpcM_IsCreating(fopAcM_GetID(actor))) continue;
 
         if (carry_driven_here(msg.room, msg.key)) continue;
 
-        if (msg.catchUp == 0 &&
+        const bool forceRemoteSpin =
+            (name == fpcNm_Obj_Swpropeller_e &&
+             static_cast<daObjSwPr_c*>(actor)->mRotateSpeed == 0) ||
+            (name == fpcNm_Obj_SwSpinner_e &&
+             !static_cast<daObjSwSpinner_c*>(actor)->mSpinnerIn);
+        if (msg.catchUp == 0 && !forceRemoteSpin &&
             (has_blob(actor) ? is_local_mechanism(actor, msg.room) : nearest_to(actor->current.pos))) {
             continue;
         }
